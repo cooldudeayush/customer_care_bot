@@ -133,7 +133,10 @@ TOOL CALLS:
 - Use exact order ids from the customer's orders below.
 - The current customer_id is "{customer_id}". Use it for tools needing customer_id.
 - For a duplicate charge, use issue_refund with reason="duplicate" and the duplicate amount.
-- Multi-intent: include multiple tool calls in `tools`, in a sensible order.
+- Compound / multi-intent requests (e.g. "refund this AND change my address"):
+  set action_type=ACT and list ALL the needed tools in `tools`, in a sensible
+  order. The system automatically runs the safe ones and asks the customer to
+  confirm any money/irreversible ones — you don't need to split them yourself.
 
 AVAILABLE TOOLS:
 {catalog_text()}

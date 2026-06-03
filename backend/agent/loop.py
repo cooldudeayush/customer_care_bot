@@ -174,17 +174,25 @@ class AgentLoop:
                 effective = "DENY"
             # "none" -> fall through and handle the fresh request below
 
+        pending_tools: list[ToolCall] = []
         if effective is None:
-            effective = perception.action_type
-            # Enforce the CONFIRM gate: money/irreversible tools must confirm first.
-            if effective == "ACT" and any(
-                registry.requires_confirmation(t.name) for t in perception.tools
-            ):
-                effective = "CONFIRM"
-            elif effective == "CONFIRM" and not perception.tools:
-                effective = "ANSWER"  # nothing concrete to confirm
-            if effective == "ACT":
-                tools_to_run = list(perception.tools)
+            at = perception.action_type
+            if at in ("ACT", "CONFIRM"):
+                # Multi-intent split: SAFE actions run now; MONEY/irreversible
+                # actions are gated behind CONFIRM (the gate invariant holds —
+                # a confirm-required tool never executes without a yes).
+                safe = [t for t in perception.tools if not registry.requires_confirmation(t.name)]
+                conf = [t for t in perception.tools if registry.requires_confirmation(t.name)]
+                if conf and safe:
+                    effective, tools_to_run, pending_tools = "MIXED", safe, conf
+                elif conf:
+                    effective, pending_tools = "CONFIRM", conf
+                elif safe:
+                    effective, tools_to_run = "ACT", safe
+                else:
+                    effective = "ANSWER"  # no concrete tools to run
+            else:
+                effective = at  # ANSWER | CLARIFY | ESCALATE
 
         # --- Execute the route ---------------------------------------------
         reply_parts: list[str] = []
@@ -192,11 +200,10 @@ class AgentLoop:
         errored = False
 
         if effective == "CONFIRM":
-            tools_to_run = list(perception.tools)
-            confirm_text = perception.confirm_message or _synthesize_confirm(tools_to_run)
+            confirm_text = perception.confirm_message or _synthesize_confirm(pending_tools)
             await self.store.set_pending_action(
                 session_id,
-                {"tools": [t.model_dump() for t in tools_to_run], "summary": confirm_text},
+                {"tools": [t.model_dump() for t in pending_tools], "summary": confirm_text},
             )
             awaiting_confirmation = True
             reply_parts.append(confirm_text)
@@ -267,27 +274,38 @@ class AgentLoop:
             yield {"type": "token", "content": text}
 
         else:
-            # ANSWER or ACT -> run any tools, then a grounded RESPOND call.
+            # ANSWER / ACT / MIXED -> run the safe tools, then a grounded RESPOND.
             # tool_results is a LOCAL (not instance) var so concurrent requests
             # to the shared loop singleton never clobber each other's results.
             tool_results: list[dict[str, Any]] = []
-            if effective == "ACT" and tools_to_run:
-                for tc in tools_to_run:
-                    args = parse_args(tc)
-                    yield {"type": "tool", "name": tc.name, "status": "running", "args": args}
-                    result = await asyncio.to_thread(registry.execute, tc.name, args)
-                    # Audit log: every action (esp. money/irreversible) leaves a record.
-                    logger.info(
-                        "TOOL_EXEC session=%s route=%s tool=%s args=%s success=%s",
-                        session_id, route, tc.name, args, result.get("success"),
-                    )
-                    yield {
-                        "type": "tool",
-                        "name": tc.name,
-                        "status": "done",
-                        "success": bool(result.get("success")),
-                    }
-                    tool_results.append({"name": tc.name, "args": args, "result": result})
+            for tc in tools_to_run:
+                args = parse_args(tc)
+                yield {"type": "tool", "name": tc.name, "status": "running", "args": args}
+                result = await asyncio.to_thread(registry.execute, tc.name, args)
+                # Audit log: every action (esp. money/irreversible) leaves a record.
+                logger.info(
+                    "TOOL_EXEC session=%s route=%s tool=%s args=%s success=%s",
+                    session_id, route, tc.name, args, result.get("success"),
+                )
+                yield {
+                    "type": "tool",
+                    "name": tc.name,
+                    "status": "done",
+                    "success": bool(result.get("success")),
+                }
+                tool_results.append({"name": tc.name, "args": args, "result": result})
+
+            # MIXED (multi-intent): the safe parts ran above; stage the
+            # confirm-required parts for the next turn and have RESPOND propose them.
+            pending_proposal = ""
+            if effective == "MIXED" and pending_tools:
+                proposal = perception.confirm_message or _synthesize_confirm(pending_tools)
+                await self.store.set_pending_action(
+                    session_id,
+                    {"tools": [t.model_dump() for t in pending_tools], "summary": proposal},
+                )
+                pending_proposal = proposal
+                awaiting_confirmation = True
 
             retrieval_query = " ".join(user_msgs[-2:]) if user_msgs else message
             doc_chunks = await self._retrieve(retrieval_query)
@@ -302,6 +320,7 @@ class AgentLoop:
                 tool_results=tool_results,
                 emotion=perception.emotion,
                 memory_text=memory_text,
+                pending_proposal=pending_proposal,
             )
             contents = _to_contents(history)
             try:

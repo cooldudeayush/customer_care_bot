@@ -75,16 +75,26 @@ def memory_block(mem) -> str:
     return "\n".join(lines)
 
 
+# Phase 8: explicit language mirroring (Hinglish / code-switching).
+LANGUAGE_DIRECTIVE = (
+    "LANGUAGE: Detect the language or mix the customer is using (English, Hindi, "
+    "Hinglish / code-switching, etc.) and reply in the SAME style — mirror their "
+    "Hinglish naturally when they use it. Keep it authentic, never forced."
+)
+
+
 def build_respond_instruction(
     doc_chunks: list,
     tool_results: list | None = None,
     emotion=None,
     memory_text: str = "",
+    pending_proposal: str = "",
 ) -> str:
     """RESPOND system instruction: persona + grounding + what-we-know-about-the-
     customer + policy excerpts + the structured results of any tools run this turn
-    + a tone directive. The reply must report tool outcomes accurately — never
-    invent a result a tool didn't return.
+    + a pending-confirmation proposal (multi-intent) + tone + language directives.
+    The reply must report tool outcomes accurately — never invent a result a tool
+    didn't return.
     """
     import json
 
@@ -106,10 +116,19 @@ def build_respond_instruction(
             "success=false, acknowledge it honestly and offer a next step:\n"
             + "\n".join(lines)
         )
+    if pending_proposal:
+        # Multi-intent: the safe parts were done above; this part needs a yes/no.
+        parts.append(
+            "STILL NEEDS THE CUSTOMER'S CONFIRMATION before you do it: "
+            f'"{pending_proposal}"\nAfter reporting what you already did this turn, '
+            "clearly propose this remaining action and ask the customer to confirm "
+            "(yes/no). Do NOT claim it is done yet."
+        )
     if emotion is not None:
         from emotion.tone import tone_directive
 
         parts.append(tone_directive(emotion))
+    parts.append(LANGUAGE_DIRECTIVE)
     return "\n\n".join(parts)
 
 
