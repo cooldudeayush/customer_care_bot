@@ -91,10 +91,11 @@ def build_perception_system_instruction(
         pending_block = (
             "\nA PROPOSED ACTION IS AWAITING THE USER'S CONFIRMATION:\n"
             f"  {pending_action.get('summary', pending_action)}\n"
-            "If the latest user message agrees (yes/haan/go ahead/please do), set "
-            "pending_decision='confirm'. If they decline (no/stop/cancel/wait), set "
-            "pending_decision='deny'. If they ignore it and ask something else, set "
-            "pending_decision='none' and handle the new request normally.\n"
+            "Set pending_decision='confirm' ONLY if the latest user message clearly "
+            "agrees to THIS EXACT action (e.g. 'yes', 'go ahead', 'do it', 'haan'). "
+            "Set 'deny' if they decline (no/stop/cancel/wait). If they instead ask for "
+            "something different (a different order or a new request), set 'none' and "
+            "handle that new request — never treat an unrelated message as confirmation.\n"
         )
     return f"""\
 You are the PERCEIVE/DECIDE stage of a customer care agent. Read the conversation

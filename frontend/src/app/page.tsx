@@ -186,7 +186,11 @@ export default function ChatPage() {
         onSources: setSources,
         onTool: addTool,
         onDone: (e) => {
-          setAwaitingConfirm(Boolean(e.awaiting_confirmation));
+          // Only update confirm state if this stream is for the active session
+          // (guards against a late stream landing after a session switch).
+          if (e.session_id === activeId) {
+            setAwaitingConfirm(Boolean(e.awaiting_confirmation));
+          }
           // Reflect the (possibly new) session + title in the sidebar.
           setSessions((prev) => {
             const exists = prev.some((s) => s.session_id === e.session_id);
@@ -378,8 +382,13 @@ export default function ChatPage() {
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKeyDown}
               rows={1}
-              placeholder="Type your message… (Enter to send, Shift+Enter for newline)"
-              className="flex-1 resize-none rounded-xl border border-slate-300 px-4 py-2 text-sm focus:border-blue-500 focus:outline-none"
+              disabled={awaitingConfirm}
+              placeholder={
+                awaitingConfirm
+                  ? "Use the Yes/No buttons above to confirm…"
+                  : "Type your message… (Enter to send, Shift+Enter for newline)"
+              }
+              className="flex-1 resize-none rounded-xl border border-slate-300 px-4 py-2 text-sm focus:border-blue-500 focus:outline-none disabled:bg-slate-50"
             />
             <button
               onClick={() => handleSend()}

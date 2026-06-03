@@ -82,23 +82,6 @@ class AgentLoop:
         self.retriever = retriever or default_retriever
 
     # -- helpers ------------------------------------------------------------
-    async def _run_tools(
-        self, tools: list[ToolCall]
-    ) -> AsyncIterator[dict[str, Any]]:
-        """Execute tools, yielding tool events. Accumulates results in self._last_results."""
-        self._last_results = []
-        for tc in tools:
-            args = parse_args(tc)
-            yield {"type": "tool", "name": tc.name, "status": "running", "args": args}
-            result = await asyncio.to_thread(registry.execute, tc.name, args)
-            yield {
-                "type": "tool",
-                "name": tc.name,
-                "status": "done",
-                "success": bool(result.get("success")),
-            }
-            self._last_results.append({"name": tc.name, "args": args, "result": result})
-
     async def _retrieve(self, query: str) -> list:
         try:
             return await self.retriever.search(query)
@@ -139,12 +122,21 @@ class AgentLoop:
         # --- DECIDE: resolve a pending confirmation, then route -------------
         tools_to_run: list[ToolCall] = []
         effective: str | None = None
+        route = "fresh"  # "fresh" | "confirmed" — for the tool audit log
 
         if pending:
             await self.store.clear_pending_action(session_id)
             if perception.pending_decision == "confirm":
-                tools_to_run = [ToolCall.model_validate(t) for t in pending.get("tools", [])]
-                effective = "ACT"
+                try:
+                    tools_to_run = [
+                        ToolCall.model_validate(t) for t in pending.get("tools", [])
+                    ]
+                    effective = "ACT"
+                    route = "confirmed"
+                except Exception:  # noqa: BLE001 - corrupt pending shouldn't crash the turn
+                    logger.exception("Could not restore pending action for %s", session_id)
+                    tools_to_run = []
+                    effective = "ANSWER"
             elif perception.pending_decision == "deny":
                 effective = "DENY"
             # "none" -> fall through and handle the fresh request below
@@ -208,10 +200,26 @@ class AgentLoop:
 
         else:
             # ANSWER or ACT -> run any tools, then a grounded RESPOND call.
-            self._last_results = []
+            # tool_results is a LOCAL (not instance) var so concurrent requests
+            # to the shared loop singleton never clobber each other's results.
+            tool_results: list[dict[str, Any]] = []
             if effective == "ACT" and tools_to_run:
-                async for ev in self._run_tools(tools_to_run):
-                    yield ev
+                for tc in tools_to_run:
+                    args = parse_args(tc)
+                    yield {"type": "tool", "name": tc.name, "status": "running", "args": args}
+                    result = await asyncio.to_thread(registry.execute, tc.name, args)
+                    # Audit log: every action (esp. money/irreversible) leaves a record.
+                    logger.info(
+                        "TOOL_EXEC session=%s route=%s tool=%s args=%s success=%s",
+                        session_id, route, tc.name, args, result.get("success"),
+                    )
+                    yield {
+                        "type": "tool",
+                        "name": tc.name,
+                        "status": "done",
+                        "success": bool(result.get("success")),
+                    }
+                    tool_results.append({"name": tc.name, "args": args, "result": result})
 
             retrieval_query = " ".join(user_msgs[-2:]) if user_msgs else message
             doc_chunks = await self._retrieve(retrieval_query)
@@ -222,7 +230,7 @@ class AgentLoop:
                 }
 
             system_instruction = build_respond_instruction(
-                doc_chunks, tool_results=self._last_results, emotion=perception.emotion
+                doc_chunks, tool_results=tool_results, emotion=perception.emotion
             )
             contents = _to_contents(history)
             try:

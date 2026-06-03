@@ -234,8 +234,16 @@ def issue_refund(order_id: str, amount: float | None = None, reason: str | None 
             return _err(f"No captured payment found for order {order_id} to refund.")
 
         dup = _duplicate_amount(payments)
+        reason_says_dup = bool(reason and "duplicate" in reason.lower())
+        # Guard: if the user/model claims a duplicate but none exists, do NOT
+        # silently fall through to a full refund — say so and stop.
+        if reason_says_dup and dup is None:
+            return _err(
+                f"No duplicate charge was found on order {order_id}, so there's "
+                "nothing to reverse. Let me know if you'd like a different refund."
+            )
         is_duplicate = bool(
-            (reason and "duplicate" in reason.lower())
+            reason_says_dup
             or (dup is not None and amount is not None and abs(amount - dup) < 0.01)
         )
 
