@@ -52,6 +52,43 @@ GROUNDING RULES (critical — this is how you stay trustworthy):
 """
 
 
+def build_respond_instruction(
+    doc_chunks: list, tool_results: list | None = None, emotion=None
+) -> str:
+    """RESPOND system instruction: persona + grounding + policy excerpts + the
+    structured results of any tools run this turn. The reply must report tool
+    outcomes accurately — never invent a result a tool didn't return.
+
+    ``emotion`` is captured by PERCEIVE; Phase 5 expands this into a full tone
+    policy. For now it adds a light empathy directive.
+    """
+    import json
+
+    parts = [SYSTEM_PROMPT, GROUNDING_INSTRUCTION]
+    if doc_chunks:
+        excerpts = "\n\n".join(f"From {c.source}:\n{c.text}" for c in doc_chunks)
+        parts.append("RELEVANT POLICY EXCERPTS (ground policy facts in these):\n" + excerpts)
+    if tool_results:
+        lines = []
+        for tr in tool_results:
+            args = json.dumps(tr.get("args", {}))
+            result = json.dumps(tr.get("result", {}), default=str)
+            lines.append(f"- {tr['name']}({args}) -> {result}")
+        parts.append(
+            "ACTIONS TAKEN THIS TURN — report these outcomes accurately and "
+            "naturally; never claim an outcome not shown here. If a result has "
+            "success=false, acknowledge it honestly and offer a next step:\n"
+            + "\n".join(lines)
+        )
+    if emotion is not None:
+        parts.append(
+            f"The customer currently seems {emotion.state} (intensity "
+            f"{emotion.intensity}/5). Lead with empathy if they're upset; match a "
+            "positive mood briefly; slow down and simplify if they're confused."
+        )
+    return "\n\n".join(parts)
+
+
 def build_system_instruction(doc_chunks: list) -> str:
     """Compose the RESPOND system instruction: persona + grounding + retrieved
     policy excerpts. ``doc_chunks`` are RetrievedChunk-like objects with

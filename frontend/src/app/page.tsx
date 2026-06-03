@@ -22,17 +22,37 @@ import {
   streamChat,
   type SessionSummary,
   type Source,
+  type ToolEvent,
 } from "@/lib/api";
 
 const CUSTOMER_ID = "cust_demo";
 
+// Friendly labels for the tool-activity chips.
+const TOOL_LABELS: Record<string, string> = {
+  check_order_status: "Checking order",
+  get_refund_eligibility: "Checking refund eligibility",
+  issue_refund: "Issuing refund",
+  cancel_order: "Cancelling order",
+  track_shipment: "Tracking shipment",
+  update_address: "Updating address",
+  reschedule_delivery: "Rescheduling delivery",
+  create_ticket: "Opening a ticket",
+};
+
 type Role = "user" | "bot";
+
+interface ToolActivity {
+  name: string;
+  status: "running" | "done";
+  success?: boolean;
+}
 
 interface Message {
   id: string;
   role: Role;
   text: string;
   sources?: Source[];
+  tools?: ToolActivity[];
 }
 
 const uuid = () =>
@@ -48,6 +68,7 @@ export default function ChatPage() {
   const [sending, setSending] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [backendUp, setBackendUp] = useState<boolean | null>(null);
+  const [awaitingConfirm, setAwaitingConfirm] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const refreshSessions = useCallback(async () => {
@@ -86,12 +107,14 @@ export default function ChatPage() {
     setActiveId(uuid());
     setMessages([]);
     setInput("");
+    setAwaitingConfirm(false);
   }
 
   async function handleSelect(id: string) {
     if (sending || id === activeId) return;
     setActiveId(id);
     setMessages([]);
+    setAwaitingConfirm(false);
     setLoadingHistory(true);
     const detail = await getSession(id);
     setLoadingHistory(false);
@@ -108,8 +131,8 @@ export default function ChatPage() {
     }
   }
 
-  async function handleSend() {
-    const text = input.trim();
+  async function handleSend(textArg?: string) {
+    const text = (textArg ?? input).trim();
     // Don't allow a send while a stream is in flight or while a past chat's
     // history is still loading (otherwise the turn lands on the wrong session).
     if (!text || sending || loadingHistory) return;
@@ -122,6 +145,7 @@ export default function ChatPage() {
     ]);
     setInput("");
     setSending(true);
+    setAwaitingConfirm(false);
 
     const appendToBot = (chunk: string) =>
       setMessages((prev) =>
@@ -135,13 +159,34 @@ export default function ChatPage() {
       setMessages((prev) =>
         prev.map((m) => (m.id === botId ? { ...m, sources } : m)),
       );
+    const addTool = (t: ToolEvent) =>
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id !== botId) return m;
+          const tools = [...(m.tools ?? [])];
+          if (t.status === "running") {
+            tools.push({ name: t.name, status: "running" });
+          } else {
+            // mark the last running entry for this tool as done
+            for (let i = tools.length - 1; i >= 0; i--) {
+              if (tools[i].name === t.name && tools[i].status === "running") {
+                tools[i] = { name: t.name, status: "done", success: t.success };
+                break;
+              }
+            }
+          }
+          return { ...m, tools };
+        }),
+      );
 
     await streamChat(
       { message: text, session_id: activeId, customer_id: CUSTOMER_ID },
       {
         onToken: appendToBot,
         onSources: setSources,
+        onTool: addTool,
         onDone: (e) => {
+          setAwaitingConfirm(Boolean(e.awaiting_confirmation));
           // Reflect the (possibly new) session + title in the sidebar.
           setSessions((prev) => {
             const exists = prev.some((s) => s.session_id === e.session_id);
@@ -267,6 +312,28 @@ export default function ChatPage() {
                     m.role === "user" ? "items-end" : "items-start"
                   }`}
                 >
+                  {m.role === "bot" && m.tools && m.tools.length > 0 && (
+                    <div className="mb-1 flex max-w-[80%] flex-wrap gap-1 px-1">
+                      {m.tools.map((t, i) => (
+                        <span
+                          key={i}
+                          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${
+                            t.status === "running"
+                              ? "border-amber-300 bg-amber-50 text-amber-700"
+                              : t.success
+                                ? "border-green-300 bg-green-50 text-green-700"
+                                : "border-red-300 bg-red-50 text-red-700"
+                          }`}
+                        >
+                          {t.status === "running"
+                            ? `⏳ ${TOOL_LABELS[t.name] ?? t.name}…`
+                            : t.success
+                              ? `✅ ${TOOL_LABELS[t.name] ?? t.name}`
+                              : `⚠️ ${TOOL_LABELS[t.name] ?? t.name} failed`}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   <div
                     className={`max-w-[80%] whitespace-pre-wrap rounded-2xl px-4 py-2 text-sm ${
                       m.role === "user"
@@ -288,6 +355,23 @@ export default function ChatPage() {
         </div>
 
         <div className="border-t border-slate-200 bg-white px-6 py-4">
+          {awaitingConfirm && !sending && (
+            <div className="mx-auto mb-3 flex max-w-2xl items-center gap-2">
+              <span className="text-xs text-slate-500">Confirm this action?</span>
+              <button
+                onClick={() => handleSend("Yes, go ahead.")}
+                className="rounded-lg bg-green-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-green-700"
+              >
+                Yes, go ahead
+              </button>
+              <button
+                onClick={() => handleSend("No, please don't.")}
+                className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+              >
+                No
+              </button>
+            </div>
+          )}
           <div className="mx-auto flex max-w-2xl items-end gap-2">
             <textarea
               value={input}
@@ -298,7 +382,7 @@ export default function ChatPage() {
               className="flex-1 resize-none rounded-xl border border-slate-300 px-4 py-2 text-sm focus:border-blue-500 focus:outline-none"
             />
             <button
-              onClick={handleSend}
+              onClick={() => handleSend()}
               disabled={sending || !input.trim()}
               className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-40"
             >

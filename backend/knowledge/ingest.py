@@ -26,15 +26,15 @@ async def main() -> None:
         n = await retriever.build()
     except LLMNotConfigured:
         print(
-            "✗ GEMINI_API_KEY is not set. Add it to backend/.env, then re-run "
+            "[X] GEMINI_API_KEY is not set. Add it to backend/.env, then re-run "
             "`python -m knowledge.ingest`."
         )
         return
     if n == 0:
-        print("✗ No corpus documents found. Add markdown files under data/corpus/.")
+        print("[X] No corpus documents found. Add markdown files under data/corpus/.")
         return
     retriever.save()
-    print(f"✓ Ingested {n} chunks and saved the retrieval index.")
+    print(f"[OK] Ingested {n} chunks and saved the retrieval index.")
 
 
 if __name__ == "__main__":

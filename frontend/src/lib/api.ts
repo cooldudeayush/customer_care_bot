@@ -19,6 +19,7 @@ export interface DoneEvent {
   type: "done";
   session_id: string;
   title: string;
+  awaiting_confirmation?: boolean;
 }
 
 export interface Source {
@@ -26,11 +27,18 @@ export interface Source {
   heading: string;
 }
 
+export interface ToolEvent {
+  name: string;
+  status: "running" | "done";
+  success?: boolean;
+}
+
 export interface StreamHandlers {
   onToken: (text: string) => void;
   onDone: (e: DoneEvent) => void;
   onError: (message: string) => void;
   onSources?: (sources: Source[]) => void;
+  onTool?: (t: ToolEvent) => void;
 }
 
 export interface SessionSummary {
@@ -98,6 +106,10 @@ export async function streamChat(
       session_id?: string;
       title?: string;
       sources?: Source[];
+      name?: string;
+      status?: "running" | "done";
+      success?: boolean;
+      awaiting_confirmation?: boolean;
     };
     try {
       data = JSON.parse(payload);
@@ -108,6 +120,8 @@ export async function streamChat(
       handlers.onToken(data.content);
     } else if (data.type === "sources" && data.sources) {
       handlers.onSources?.(data.sources);
+    } else if (data.type === "tool" && data.name && data.status) {
+      handlers.onTool?.({ name: data.name, status: data.status, success: data.success });
     } else if (data.type === "done") {
       if (doneFired) return;
       doneFired = true;
@@ -115,6 +129,7 @@ export async function streamChat(
         type: "done",
         session_id: data.session_id ?? req.session_id,
         title: data.title ?? "New chat",
+        awaiting_confirmation: data.awaiting_confirmation,
       });
     } else if (data.type === "error") {
       handlers.onError(data.message ?? "Unknown error");

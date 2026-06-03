@@ -176,6 +176,45 @@ class GeminiClient:
             raise LLMError(f"Expected a JSON object, got {type(parsed).__name__}.")
         return parsed
 
+    async def generate_structured(
+        self,
+        contents: Any,
+        *,
+        response_schema: Any,
+        system_instruction: str | None = None,
+        temperature: float = 0.2,
+    ) -> Any:
+        """Controlled generation against a Pydantic ``response_schema``.
+
+        Returns an instance of ``response_schema`` (via the SDK's ``.parsed``),
+        falling back to validating ``.text`` if needed. Used by the single
+        PERCEIVE/DECIDE call to get {emotion, intents, entities, tool plan}.
+        """
+        client = self._ensure_client()
+        config = types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            temperature=temperature,
+            response_mime_type="application/json",
+            response_schema=response_schema,
+        )
+
+        def _call():
+            return client.models.generate_content(
+                model=self._settings.gemini_model, contents=contents, config=config
+            )
+
+        resp = await self._with_backoff(_call)
+        parsed = getattr(resp, "parsed", None)
+        if parsed is not None:
+            return parsed
+        text = getattr(resp, "text", None) or ""
+        if hasattr(response_schema, "model_validate_json"):
+            try:
+                return response_schema.model_validate_json(text)
+            except Exception as exc:  # noqa: BLE001
+                raise LLMError(f"Structured output did not match schema: {text[:200]!r}") from exc
+        raise LLMError("Structured generation returned no parsable output.")
+
     async def stream(
         self,
         contents: Any,

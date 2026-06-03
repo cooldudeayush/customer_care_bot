@@ -1,43 +1,45 @@
-"""The agent loop — the controller that runs on every user turn.
+"""The agent loop — the controller that runs on every user turn (Phase 3).
 
-Phase 1 implements a thin slice of the full loop:
+Flow per turn (~2 LLM calls — PERCEIVE + RESPOND — to respect the free tier):
 
-    PERCEIVE -> RETRIEVE -> DECIDE -> ACT -> RESPOND -> REMEMBER
+  PERCEIVE  : one structured Gemini call -> {emotion, intents, action plan}
+  DECIDE    : route ANSWER | ACT | CLARIFY | CONFIRM | ESCALATE; enforce the
+              CONFIRM gate for money/irreversible tools; resolve a pending yes/no
+  ACT       : execute the planned tools against the mock business systems
+  RESPOND   : one streamed Gemini call, grounded in policy excerpts + tool results
+  REMEMBER  : (Phase 6) long-term summary at session end
 
-Only RESPOND does real work right now (a single streamed Gemini call grounded in
-the running transcript). The other stages are explicit no-op markers so later
-phases drop in without reshaping this function:
-  * PERCEIVE  (Phase 3/5): one structured call -> {emotion, intents, entities, tools}
-  * RETRIEVE  (Phase 2/4): LightRAG doc chunks + Neo4j graph traversal
-  * DECIDE    (Phase 3):   ANSWER | ACT | CLARIFY | CONFIRM | ESCALATE
-  * ACT       (Phase 3):   execute tools, write back to the graph
-  * REMEMBER  (Phase 6):   long-term session summary at session end
-
-The loop yields a stream of event dicts so the endpoint can forward them as SSE:
-  {"type": "token",  "content": "..."}    # one chunk of the reply
-  {"type": "done",   "session_id", "title"}
-  {"type": "error",  "message": "..."}
+SSE events yielded:
+  {"type":"token","content":...}                  reply text chunk
+  {"type":"sources","sources":[...]}              policy docs that grounded the reply
+  {"type":"tool","name","status","success"?}      a tool firing / finished
+  {"type":"done","session_id","title","awaiting_confirmation"}
+  {"type":"error","message":...}
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, AsyncIterator
 
 from knowledge.retriever import Retriever, retriever as default_retriever
 from llm import GeminiClient, LLMError, LLMNotConfigured, gemini_client
 from memory.store import ConversationStore, Message, store
+from tools import registry
 
-from .prompts import build_system_instruction
+from .perception import Emotion, Perception, ToolCall, parse_args, perceive
+from .prompts import build_respond_instruction
 
 logger = logging.getLogger("ccb.agent")
 
+_NO_KEY_MSG = (
+    "The bot isn't connected to Gemini yet. Add your GEMINI_API_KEY to "
+    "backend/.env and restart the server."
+)
+
 
 def _to_contents(history: list[Message]) -> list[dict[str, Any]]:
-    """Convert stored transcript -> Gemini multi-turn ``contents`` list.
-
-    Roles map: our 'user' -> 'user', our 'bot' -> 'model'.
-    """
     contents: list[dict[str, Any]] = []
     for m in history:
         role = "user" if m.role == "user" else "model"
@@ -47,7 +49,25 @@ def _to_contents(history: list[Message]) -> list[dict[str, Any]]:
 
 def _autotitle(message: str) -> str:
     title = " ".join(message.strip().split())
-    return (title[:40] or "New chat")
+    return title[:40] or "New chat"
+
+
+def _synthesize_confirm(tools: list[ToolCall]) -> str:
+    """Fallback confirmation text if the model didn't supply confirm_message."""
+    bits = []
+    for tc in tools:
+        args = parse_args(tc)
+        if tc.name == "issue_refund":
+            amt = args.get("amount")
+            oid = args.get("order_id")
+            amt_s = f" of Rs.{float(amt):.0f}" if amt is not None else ""
+            bits.append(f"issue a refund{amt_s} for order #{oid}")
+        elif tc.name == "cancel_order":
+            bits.append(f"cancel order #{args.get('order_id')} and refund it")
+        else:
+            bits.append(f"run {tc.name}")
+    action = " and ".join(bits) if bits else "make this change"
+    return f"Just to confirm — I'll {action}. Shall I go ahead?"
 
 
 class AgentLoop:
@@ -61,80 +81,175 @@ class AgentLoop:
         self.llm = llm or gemini_client
         self.retriever = retriever or default_retriever
 
+    # -- helpers ------------------------------------------------------------
+    async def _run_tools(
+        self, tools: list[ToolCall]
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Execute tools, yielding tool events. Accumulates results in self._last_results."""
+        self._last_results = []
+        for tc in tools:
+            args = parse_args(tc)
+            yield {"type": "tool", "name": tc.name, "status": "running", "args": args}
+            result = await asyncio.to_thread(registry.execute, tc.name, args)
+            yield {
+                "type": "tool",
+                "name": tc.name,
+                "status": "done",
+                "success": bool(result.get("success")),
+            }
+            self._last_results.append({"name": tc.name, "args": args, "result": result})
+
+    async def _retrieve(self, query: str) -> list:
+        try:
+            return await self.retriever.search(query)
+        except Exception:  # noqa: BLE001 - retrieval must never break a turn
+            logger.exception("Retrieval failed")
+            return []
+
+    # -- main ---------------------------------------------------------------
     async def stream(
         self, *, session_id: str, customer_id: str | None, message: str
     ) -> AsyncIterator[dict[str, Any]]:
-        """Run one turn, yielding SSE-ready event dicts."""
-        # --- persist the incoming turn -------------------------------------
         await self.store.ensure_session(session_id, customer_id)
         await self.store.add_message(session_id, "user", message)
 
-        # Load the full transcript once (includes the just-added user message);
-        # reused for titling, the retrieval query, and the RESPOND contents.
         history = await self.store.get_messages(session_id)
         user_msgs = [m.content for m in history if m.role == "user"]
-
-        # Title the chat from its first user message (drives the sidebar label).
         if len(user_msgs) == 1:
             title = _autotitle(message)
             await self.store.set_title(session_id, title)
         else:
             title = await self.store.get_title(session_id) or "New chat"
 
-        # --- RETRIEVE: ground the answer in the policy corpus (Phase 2) -----
-        # Retrieve on the last couple of user turns so context-dependent
-        # follow-ups ("what about electronics?") still hit the right section.
-        # (RETRIEVE also covers Neo4j graph traversal in Phase 4.)
-        retrieval_query = " ".join(user_msgs[-2:]) if user_msgs else message
+        pending = await self.store.get_pending_action(session_id)
+
+        # --- PERCEIVE -------------------------------------------------------
         try:
-            doc_chunks = await self.retriever.search(retrieval_query)
-        except Exception:  # noqa: BLE001 - retrieval must never break a turn
-            logger.exception("Retrieval failed for session %s", session_id)
-            doc_chunks = []
-
-        if doc_chunks:
-            # Surface which docs grounded the answer (demo eye-candy + trust).
-            yield {
-                "type": "sources",
-                "sources": [
-                    {"source": c.source, "heading": c.heading} for c in doc_chunks
-                ],
-            }
-
-        # --- PERCEIVE / DECIDE / ACT (Phase 3-5) — no-ops in Phase 2. -------
-
-        # --- RESPOND: one streamed Gemini call, grounded in retrieved docs --
-        contents = _to_contents(history)
-        system_instruction = build_system_instruction(doc_chunks)
-
-        reply_parts: list[str] = []
-        try:
-            async for token in self.llm.stream(
-                contents, system_instruction=system_instruction
-            ):
-                reply_parts.append(token)
-                yield {"type": "token", "content": token}
+            perception = await perceive(
+                history=history, customer_id=customer_id, pending_action=pending, llm=self.llm
+            )
         except LLMNotConfigured:
             logger.info("Chat attempted without a configured GEMINI_API_KEY")
-            yield {
-                "type": "error",
-                "message": (
-                    "The bot isn't connected to Gemini yet. Add your GEMINI_API_KEY "
-                    "to backend/.env and restart the server."
-                ),
-            }
+            yield {"type": "error", "message": _NO_KEY_MSG}
             return
-        except LLMError as exc:
-            logger.exception("LLM error during RESPOND for session %s", session_id)
-            yield {"type": "error", "message": f"Sorry — I hit a problem: {exc}"}
+        except Exception:  # noqa: BLE001 - degrade to a plain answer on parse/LLM error
+            logger.exception("PERCEIVE failed; falling back to ANSWER")
+            perception = Perception(emotion=Emotion(), intents=[], action_type="ANSWER", tools=[])
+
+        # --- DECIDE: resolve a pending confirmation, then route -------------
+        tools_to_run: list[ToolCall] = []
+        effective: str | None = None
+
+        if pending:
+            await self.store.clear_pending_action(session_id)
+            if perception.pending_decision == "confirm":
+                tools_to_run = [ToolCall.model_validate(t) for t in pending.get("tools", [])]
+                effective = "ACT"
+            elif perception.pending_decision == "deny":
+                effective = "DENY"
+            # "none" -> fall through and handle the fresh request below
+
+        if effective is None:
+            effective = perception.action_type
+            # Enforce the CONFIRM gate: money/irreversible tools must confirm first.
+            if effective == "ACT" and any(
+                registry.requires_confirmation(t.name) for t in perception.tools
+            ):
+                effective = "CONFIRM"
+            elif effective == "CONFIRM" and not perception.tools:
+                effective = "ANSWER"  # nothing concrete to confirm
+            if effective == "ACT":
+                tools_to_run = list(perception.tools)
+
+        # --- Execute the route ---------------------------------------------
+        reply_parts: list[str] = []
+        awaiting_confirmation = False
+        errored = False
+
+        if effective == "CONFIRM":
+            tools_to_run = list(perception.tools)
+            confirm_text = perception.confirm_message or _synthesize_confirm(tools_to_run)
+            await self.store.set_pending_action(
+                session_id,
+                {"tools": [t.model_dump() for t in tools_to_run], "summary": confirm_text},
+            )
+            awaiting_confirmation = True
+            reply_parts.append(confirm_text)
+            yield {"type": "token", "content": confirm_text}
+
+        elif effective == "CLARIFY":
+            text = perception.clarification_question or "Could you share a bit more detail so I can help?"
+            reply_parts.append(text)
+            yield {"type": "token", "content": text}
+
+        elif effective == "DENY":
+            text = "No problem — I won't make that change. Is there anything else I can help with?"
+            reply_parts.append(text)
+            yield {"type": "token", "content": text}
+
+        elif effective == "ESCALATE":
+            # Phase 7 builds the full handoff packet; here we log a ticket + reply.
+            await asyncio.to_thread(
+                registry.execute,
+                "create_ticket",
+                {
+                    "customer_id": customer_id or "unknown",
+                    "subject": "Escalation to a specialist",
+                    "body": perception.reasoning or message,
+                    "priority": "high",
+                },
+            )
+            text = (
+                "I'm connecting you with a specialist who can take this further. "
+                "I've shared the full context, so you won't need to repeat anything."
+            )
+            reply_parts.append(text)
+            yield {"type": "token", "content": text}
+
+        else:
+            # ANSWER or ACT -> run any tools, then a grounded RESPOND call.
+            self._last_results = []
+            if effective == "ACT" and tools_to_run:
+                async for ev in self._run_tools(tools_to_run):
+                    yield ev
+
+            retrieval_query = " ".join(user_msgs[-2:]) if user_msgs else message
+            doc_chunks = await self._retrieve(retrieval_query)
+            if doc_chunks:
+                yield {
+                    "type": "sources",
+                    "sources": [{"source": c.source, "heading": c.heading} for c in doc_chunks],
+                }
+
+            system_instruction = build_respond_instruction(
+                doc_chunks, tool_results=self._last_results, emotion=perception.emotion
+            )
+            contents = _to_contents(history)
+            try:
+                async for token in self.llm.stream(contents, system_instruction=system_instruction):
+                    reply_parts.append(token)
+                    yield {"type": "token", "content": token}
+            except LLMNotConfigured:
+                yield {"type": "error", "message": _NO_KEY_MSG}
+                errored = True
+            except LLMError as exc:
+                logger.exception("LLM error during RESPOND for session %s", session_id)
+                yield {"type": "error", "message": f"Sorry — I hit a problem: {exc}"}
+                errored = True
+
+        if errored:
             return
 
         reply = "".join(reply_parts).strip()
         if reply:
             await self.store.add_message(session_id, "bot", reply)
 
-        # --- REMEMBER (Phase 6): long-term summary happens at session end. ---
-        yield {"type": "done", "session_id": session_id, "title": title}
+        yield {
+            "type": "done",
+            "session_id": session_id,
+            "title": title,
+            "awaiting_confirmation": awaiting_confirmation,
+        }
 
 
 # Process-wide loop instance used by the /chat endpoint.

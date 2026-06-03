@@ -28,6 +28,15 @@ def _anchor(path: str) -> str:
     return path if os.path.isabs(path) else os.path.normpath(os.path.join(_BACKEND_DIR, path))
 
 
+def _resolve_sqlite_path(database_url: str) -> str:
+    """Turn a ``sqlite:///./data/x.db`` URL into a filesystem path."""
+    if database_url.startswith("sqlite:///"):
+        return database_url[len("sqlite:///") :]
+    if database_url.startswith("sqlite://"):
+        return database_url[len("sqlite://") :]
+    return database_url
+
+
 class Settings(BaseSettings):
     """Application settings, populated from the environment / ``.env``.
 
@@ -75,6 +84,8 @@ class Settings(BaseSettings):
     # Local-first default: a file-based SQLite DB. Swap to Postgres/Supabase by
     # changing this URL only.
     database_url: str = Field(default="sqlite:///./data/app.db")
+    # Mock business systems (orders/payments/tickets) the tools read/write.
+    business_database_url: str = Field(default="sqlite:///./data/business.db")
 
     # ---- Customer operational graph (Phase 4: Neo4j-in-Docker, later Aura) --
     neo4j_uri: str = Field(default="bolt://localhost:7687")

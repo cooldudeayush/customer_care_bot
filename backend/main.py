@@ -31,6 +31,7 @@ from config import get_settings
 from knowledge.retriever import retriever
 from llm import LLMError, LLMNotConfigured, gemini_client
 from memory.store import store
+from tools.business_db import init_db as init_business_db, is_seeded
 
 settings = get_settings()
 
@@ -41,7 +42,16 @@ logger = logging.getLogger("ccb.main")
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Modern startup/shutdown hook (replaces deprecated on_event)."""
-    store.init()  # create SQLite tables if missing
+    store.init()  # create conversation/memory tables if missing
+
+    # Phase 3: ensure the mock business DB exists and is seeded for the demo.
+    init_business_db()
+    if not is_seeded():
+        from tools.seed import seed
+
+        seed()
+        logger.info("Seeded mock business DB.")
+
     logger.info(
         "Starting %s [env=%s, model=%s, gemini_configured=%s]",
         settings.app_name,

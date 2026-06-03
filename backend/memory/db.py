@@ -19,20 +19,10 @@ import sqlite3
 from contextlib import contextmanager
 from typing import Iterator
 
-from config import _anchor, get_settings
-
-
-def _resolve_path(database_url: str) -> str:
-    """Turn a ``sqlite:///./data/app.db`` URL into a filesystem path."""
-    if database_url.startswith("sqlite:///"):
-        return database_url[len("sqlite:///") :]
-    if database_url.startswith("sqlite://"):
-        return database_url[len("sqlite://") :]
-    return database_url
-
+from config import _anchor, _resolve_sqlite_path, get_settings
 
 # Anchor to backend/ so the DB lives in a stable place regardless of cwd.
-DB_PATH = _anchor(_resolve_path(get_settings().database_url))
+DB_PATH = _anchor(_resolve_sqlite_path(get_settings().database_url))
 
 
 SCHEMA = """
@@ -54,6 +44,14 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id);
+
+-- A single pending confirmation per session (the CONFIRM gate, Phase 3):
+-- the proposed tool plan awaiting the user's yes/no on the next turn.
+CREATE TABLE IF NOT EXISTS pending_actions (
+    session_id TEXT PRIMARY KEY,
+    payload    TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 

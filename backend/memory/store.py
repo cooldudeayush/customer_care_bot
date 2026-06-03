@@ -11,6 +11,7 @@ cross-session summaries alongside this.
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -159,6 +160,49 @@ class ConversationStore:
                 ]
 
         return await asyncio.to_thread(_op)
+
+    # -- pending action (CONFIRM gate) --------------------------------------
+    async def set_pending_action(self, session_id: str, payload: dict) -> None:
+        data = json.dumps(payload)
+
+        def _op() -> None:
+            with connect() as conn:
+                conn.execute(
+                    "INSERT INTO pending_actions (session_id, payload, created_at) "
+                    "VALUES (?, ?, ?) "
+                    "ON CONFLICT(session_id) DO UPDATE SET payload = excluded.payload, "
+                    "created_at = excluded.created_at",
+                    (session_id, data, _now()),
+                )
+                conn.commit()
+
+        await asyncio.to_thread(_op)
+
+    async def get_pending_action(self, session_id: str) -> dict | None:
+        def _op() -> dict | None:
+            with connect() as conn:
+                row = conn.execute(
+                    "SELECT payload FROM pending_actions WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                try:
+                    return json.loads(row["payload"])
+                except (ValueError, TypeError):
+                    return None
+
+        return await asyncio.to_thread(_op)
+
+    async def clear_pending_action(self, session_id: str) -> None:
+        def _op() -> None:
+            with connect() as conn:
+                conn.execute(
+                    "DELETE FROM pending_actions WHERE session_id = ?", (session_id,)
+                )
+                conn.commit()
+
+        await asyncio.to_thread(_op)
 
     async def count_user_messages(self, session_id: str) -> int:
         def _op() -> int:
