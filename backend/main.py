@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from agent.loop import agent_loop
 from config import get_settings
+from knowledge.graph import graph_client
 from knowledge.retriever import retriever
 from llm import LLMError, LLMNotConfigured, gemini_client
 from memory.store import store
@@ -79,7 +80,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "`python -m knowledge.ingest` is run with a key set."
         )
 
+    # Phase 4: connect to Neo4j and mirror the business data into the graph.
+    # Optional — if it's off/unreachable, eligibility uses the SQLite fallback.
+    if graph_client.init():
+        graph_client.sync_from_business_db()
+        logger.info("Neo4j graph enabled.")
+    else:
+        logger.info("Neo4j graph disabled/unreachable — using SQLite eligibility.")
+
     yield
+    graph_client.close()
     logger.info("Shutting down %s", settings.app_name)
 
 
@@ -119,6 +129,7 @@ class HealthResponse(BaseModel):
     app_env: str
     model: str
     retrieval_chunks: int
+    graph_enabled: bool
 
 
 class LLMHealthResponse(BaseModel):
@@ -163,6 +174,7 @@ async def health() -> HealthResponse:
         app_env=settings.app_env,
         model=settings.gemini_model,
         retrieval_chunks=retriever.size,
+        graph_enabled=graph_client.enabled,
     )
 
 

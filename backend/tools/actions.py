@@ -17,6 +17,8 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timezone
 
+from knowledge.graph import graph_client
+
 from .business_db import connect
 
 # --- Policy constants (mirror data/corpus so tools + docs agree) -------------
@@ -83,13 +85,80 @@ def _captured_payments(conn: sqlite3.Connection, order_id: str) -> list[sqlite3.
 
 def _duplicate_amount(payments: list[sqlite3.Row]) -> float | None:
     """Return the amount of a duplicated captured charge, if any."""
+    return _duplicate_amount_from_list([p["amount"] for p in payments])
+
+
+def _duplicate_amount_from_list(amounts: list[float]) -> float | None:
     seen: dict[float, int] = {}
-    for p in payments:
-        seen[p["amount"]] = seen.get(p["amount"], 0) + 1
+    for a in amounts:
+        seen[a] = seen.get(a, 0) + 1
     for amount, count in seen.items():
         if count >= 2:
             return float(amount)
     return None
+
+
+def compute_refund_eligibility(
+    order_id: str,
+    *,
+    status: str | None,
+    delivered_at: str | None,
+    category: str | None,
+    window_days: int | None,
+    payment_amounts: list[float],
+    source: str,
+) -> dict:
+    """Pure eligibility decision from the fields a refund check needs.
+
+    Shared by the graph path (fields from a Cypher traversal) and the SQLite
+    fallback (fields from the tables), so both stay perfectly consistent.
+    ``source`` records which path produced the answer ('graph' | 'sqlite').
+    """
+    category = category or "unknown"
+    window = int(window_days) if window_days is not None else _window_days(category)
+    dup = _duplicate_amount_from_list(payment_amounts or [])
+    delivered = _parse_dt(delivered_at)
+    days_since = (_now() - delivered).days if delivered else None
+
+    if status == "refunded":
+        eligible, reason = False, "This order has already been refunded."
+    elif status == "cancelled":
+        eligible, reason = False, "This order was cancelled."
+    elif category in NON_REFUNDABLE:
+        eligible, reason = False, f"{category} items are non-refundable."
+    elif delivered is None:
+        eligible, reason = (
+            False,
+            "The order hasn't been delivered yet — it can be cancelled instead of refunded.",
+        )
+    elif days_since is not None and days_since <= window:
+        eligible, reason = (
+            True,
+            f"Within the {window}-day refund window ({days_since} days since delivery).",
+        )
+    else:
+        eligible, reason = (
+            False,
+            f"Outside the {window}-day refund window ({days_since} days since delivery).",
+        )
+
+    legit_total = (
+        float(sum(payment_amounts) - (dup or 0.0)) if payment_amounts else None
+    )
+    return _ok(
+        {
+            "order_id": order_id,
+            "category": category,
+            "status": status,
+            "window_days": window,
+            "days_since_delivery": days_since,
+            "eligible": eligible,
+            "reason": reason,
+            "refundable_amount": legit_total if eligible else None,
+            "duplicate_charge": {"detected": dup is not None, "amount": dup},
+            "source": source,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -131,61 +200,29 @@ def check_order_status(order_id: str) -> dict:
 
 
 def get_refund_eligibility(order_id: str) -> dict:
+    # PRIMARY: the Neo4j graph traversal (Order->Item->Product->Policy) — the
+    # relational-reasoning showcase. Returns None if the graph is off/unreachable
+    # or the order isn't in it, in which case we fall back to SQLite below.
+    data = graph_client.refund_eligibility_data(order_id)
+    if data is not None:
+        return compute_refund_eligibility(order_id, source="graph", **data)
+
+    # FALLBACK: SQLite (same decision logic, same result shape).
     with connect() as conn:
         order = _get_order(conn, order_id)
         if order is None:
             return _err(f"No order found with id {order_id}.")
         items = _order_items(conn, order_id)
         category = items[0]["category"] if items else "unknown"
-        window = _window_days(category)
         payments = _captured_payments(conn, order_id)
-        dup = _duplicate_amount(payments)
-
-        status = order["status"]
-        delivered = _parse_dt(order["delivered_at"])
-        days_since = (
-            (_now() - delivered).days if delivered else None
-        )
-
-        # Build eligibility decision.
-        if status == "refunded":
-            eligible, reason = False, "This order has already been refunded."
-        elif status == "cancelled":
-            eligible, reason = False, "This order was cancelled."
-        elif category in NON_REFUNDABLE:
-            eligible, reason = False, f"{category} items are non-refundable."
-        elif delivered is None:
-            eligible, reason = (
-                False,
-                "The order hasn't been delivered yet — it can be cancelled instead of refunded.",
-            )
-        elif days_since is not None and days_since <= window:
-            eligible, reason = (
-                True,
-                f"Within the {window}-day refund window ({days_since} days since delivery).",
-            )
-        else:
-            eligible, reason = (
-                False,
-                f"Outside the {window}-day refund window ({days_since} days since delivery).",
-            )
-
-        return _ok(
-            {
-                "order_id": order_id,
-                "category": category,
-                "status": status,
-                "window_days": window,
-                "days_since_delivery": days_since,
-                "eligible": eligible,
-                "reason": reason,
-                "refundable_amount": order["total"] if eligible else None,
-                "duplicate_charge": {
-                    # A duplicate charge is refundable regardless of the window.
-                    "detected": dup is not None,
-                    "amount": dup,
-                },
-            }
+        return compute_refund_eligibility(
+            order_id,
+            source="sqlite",
+            status=order["status"],
+            delivered_at=order["delivered_at"],
+            category=category,
+            window_days=None,
+            payment_amounts=[p["amount"] for p in payments],
         )
 
 
@@ -274,6 +311,8 @@ def issue_refund(order_id: str, amount: float | None = None, reason: str | None 
             (order_id, ref["method"], refund_amount, "refunded", ref["last4"], _iso()),
         )
         conn.commit()
+        # Mirror to the customer graph (best-effort; SQLite is the source of truth).
+        graph_client.record_refund(order_id, new_status, refund_amount, ref["method"], ref["last4"])
         return _ok(
             {
                 "order_id": order_id,
@@ -313,6 +352,8 @@ def cancel_order(order_id: str) -> dict:
             )
             refunded += float(p["amount"])
         conn.commit()
+        # Mirror the status flip to the customer graph (best-effort).
+        graph_client.flip_order_status(order_id, "cancelled")
         return _ok(
             {
                 "order_id": order_id,

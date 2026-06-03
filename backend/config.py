@@ -132,6 +132,13 @@ class Settings(BaseSettings):
         return bool(key) and not key.lower().startswith("your-")
 
     @property
+    def neo4j_configured(self) -> bool:
+        """True when a real (non-placeholder) Neo4j password is set. When False,
+        the graph layer stays OFF and the bot uses the SQLite eligibility path."""
+        pw = self.neo4j_password.strip()
+        return bool(pw) and not pw.lower().startswith("your-")
+
+    @property
     def corpus_path(self) -> str:
         """Absolute corpus dir (cwd-independent)."""
         return _anchor(self.corpus_dir)

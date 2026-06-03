@@ -78,9 +78,26 @@ pip install -r requirements.txt
 # configure your key
 cp .env.example .env        # then edit .env and paste your GEMINI_API_KEY
 
+# one-time: embed the policy corpus for grounding (needs the key)
+python -m knowledge.ingest
+
 uvicorn main:app --reload --port 8000
 ```
 Verify: <http://localhost:8000/health> · <http://localhost:8000/health/llm> · <http://localhost:8000/docs>
+
+The mock business data (orders, payments…) **auto-seeds on first boot**. Re-seed
+anytime with `python -m tools.seed`.
+
+### Optional: the Neo4j customer graph (Phase 4 showcase)
+The bot works without it (refund eligibility falls back to SQLite). To enable the
+graph reasoning + writebacks:
+```bash
+docker compose up -d                 # from the repo root; Browser at http://localhost:7474
+# set NEO4J_PASSWORD=password123 in backend/.env, then restart the backend
+```
+`/health` then shows `"graph_enabled": true`. Verify parity with
+`backend/.venv/Scripts/python.exe tests/test_graph_parity.py`. Swap to Neo4j Aura
+(cloud) by pointing `NEO4J_URI/USER/PASSWORD` at your instance — same code.
 
 ### 2. Frontend (Next.js)
 ```bash

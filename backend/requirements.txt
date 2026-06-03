@@ -13,3 +13,7 @@ httpx>=0.27,<0.29
 # Phase 2 retrieval: cosine similarity over Gemini embeddings (lightweight,
 # dependency-light alternative to a heavy vector DB for a small policy corpus).
 numpy>=1.26,<3
+# Phase 4 customer graph: Neo4j driver (works against Docker locally or Aura
+# cloud — same code, just a different NEO4J_URI). Optional at runtime: the bot
+# degrades to SQLite eligibility if the graph is unreachable.
+neo4j>=5,<6
