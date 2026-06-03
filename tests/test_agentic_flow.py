@@ -37,7 +37,7 @@ seed()  # fresh business state
 PLAN: dict[str, Perception] = {}
 
 
-async def fake_perceive(*, history, customer_id, pending_action, llm=None):
+async def fake_perceive(*, history, customer_id, pending_action, memory_text="", llm=None):
     return PLAN[history[-1].content]
 
 

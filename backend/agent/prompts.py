@@ -52,19 +52,44 @@ GROUNDING RULES (critical — this is how you stay trustworthy):
 """
 
 
-def build_respond_instruction(
-    doc_chunks: list, tool_results: list | None = None, emotion=None
-) -> str:
-    """RESPOND system instruction: persona + grounding + policy excerpts + the
-    structured results of any tools run this turn. The reply must report tool
-    outcomes accurately — never invent a result a tool didn't return.
+def memory_block(mem) -> str:
+    """A 'what we know about this customer' block from long-term memory (Phase 6).
+    ``mem`` is a CustomerMemoryRecord-like object (or None)."""
+    if mem is None:
+        return ""
+    lines = ["WHAT WE KNOW ABOUT THIS CUSTOMER (from past conversations):"]
+    if getattr(mem, "summary", None):
+        lines.append(f"- {mem.summary}")
+    if getattr(mem, "open_items", None):
+        lines.append("- Open items: " + "; ".join(mem.open_items))
+    if getattr(mem, "preferences", None):
+        lines.append("- Preferences: " + "; ".join(mem.preferences))
+    if len(lines) == 1:
+        return ""
+    lines.append(
+        'Use this naturally: proactively follow up on an open item when relevant '
+        '(e.g., "Last time you reached out about a delayed order — did that get '
+        'sorted?"). Never invent anything beyond what\'s stated here.'
+    )
+    return "\n".join(lines)
 
-    ``emotion`` is captured by PERCEIVE; Phase 5 expands this into a full tone
-    policy. For now it adds a light empathy directive.
+
+def build_respond_instruction(
+    doc_chunks: list,
+    tool_results: list | None = None,
+    emotion=None,
+    memory_text: str = "",
+) -> str:
+    """RESPOND system instruction: persona + grounding + what-we-know-about-the-
+    customer + policy excerpts + the structured results of any tools run this turn
+    + a tone directive. The reply must report tool outcomes accurately — never
+    invent a result a tool didn't return.
     """
     import json
 
     parts = [SYSTEM_PROMPT, GROUNDING_INSTRUCTION]
+    if memory_text:
+        parts.append(memory_text)
     if doc_chunks:
         excerpts = "\n\n".join(f"From {c.source}:\n{c.text}" for c in doc_chunks)
         parts.append("RELEVANT POLICY EXCERPTS (ground policy facts in these):\n" + excerpts)

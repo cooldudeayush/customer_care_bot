@@ -26,10 +26,11 @@ from typing import Any, AsyncIterator
 from knowledge.retriever import Retriever, retriever as default_retriever
 from llm import GeminiClient, LLMError, LLMNotConfigured, gemini_client
 from memory.store import ConversationStore, Message, store
+from memory.summarize import summarize_session
 from tools import registry
 
 from .perception import Emotion, Perception, ToolCall, parse_args, perceive
-from .prompts import build_respond_instruction
+from .prompts import build_respond_instruction, memory_block
 
 logger = logging.getLogger("ccb.agent")
 
@@ -106,10 +107,29 @@ class AgentLoop:
 
         pending = await self.store.get_pending_action(session_id)
 
+        # --- REMEMBER (load): cross-session memory (Phase 6) ----------------
+        # On a brand-new session, first digest the customer's previous session
+        # into long-term memory, so we can greet them with that context.
+        if len(user_msgs) == 1 and customer_id:
+            prior = await self.store.get_prior_unsummarized_session(customer_id, session_id)
+            if prior:
+                try:
+                    await summarize_session(prior, customer_id, store=self.store, llm=self.llm)
+                except Exception:  # noqa: BLE001 - memory is best-effort
+                    logger.exception("Prior-session summarization failed")
+        memory_rec = (
+            await self.store.get_customer_memory(customer_id) if customer_id else None
+        )
+        memory_text = memory_block(memory_rec)
+
         # --- PERCEIVE -------------------------------------------------------
         try:
             perception = await perceive(
-                history=history, customer_id=customer_id, pending_action=pending, llm=self.llm
+                history=history,
+                customer_id=customer_id,
+                pending_action=pending,
+                memory_text=memory_text,
+                llm=self.llm,
             )
         except LLMNotConfigured:
             logger.info("Chat attempted without a configured GEMINI_API_KEY")
@@ -237,7 +257,10 @@ class AgentLoop:
                 }
 
             system_instruction = build_respond_instruction(
-                doc_chunks, tool_results=tool_results, emotion=perception.emotion
+                doc_chunks,
+                tool_results=tool_results,
+                emotion=perception.emotion,
+                memory_text=memory_text,
             )
             contents = _to_contents(history)
             try:

@@ -31,7 +31,18 @@ CREATE TABLE IF NOT EXISTS conversations (
     customer_id TEXT,
     title       TEXT NOT NULL DEFAULT 'New chat',
     started_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
+    updated_at  TEXT NOT NULL,
+    summarized  INTEGER NOT NULL DEFAULT 0
+);
+
+-- Long-term, cross-session memory about a customer (Phase 6).
+CREATE TABLE IF NOT EXISTS customer_memory (
+    customer_id      TEXT PRIMARY KEY,
+    summary          TEXT,
+    open_items       TEXT,        -- JSON list
+    preferences      TEXT,        -- JSON list
+    sentiment        TEXT,
+    last_interaction TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -81,4 +92,11 @@ def init_db() -> None:
     with connect() as conn:
         conn.execute("PRAGMA journal_mode=WAL;")  # persistent; set once
         conn.executescript(SCHEMA)
+        # Best-effort migration for DBs created before Phase 6 added the column.
+        try:
+            conn.execute(
+                "ALTER TABLE conversations ADD COLUMN summarized INTEGER NOT NULL DEFAULT 0"
+            )
+        except sqlite3.OperationalError:
+            pass  # column already exists
         conn.commit()

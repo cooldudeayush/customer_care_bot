@@ -84,7 +84,10 @@ def _snapshot_text(snapshot: dict) -> str:
 
 
 def build_perception_system_instruction(
-    snapshot: dict, pending_action: dict | None, customer_id: str | None
+    snapshot: dict,
+    pending_action: dict | None,
+    customer_id: str | None,
+    memory_text: str = "",
 ) -> str:
     pending_block = ""
     if pending_action:
@@ -137,6 +140,8 @@ AVAILABLE TOOLS:
 
 CUSTOMER CONTEXT:
 {_snapshot_text(snapshot)}
+
+{memory_text}
 {pending_block}
 Be accurate: never invent order ids or amounts not present above.
 """
@@ -147,6 +152,7 @@ async def perceive(
     history: list[Message],
     customer_id: str | None,
     pending_action: dict | None,
+    memory_text: str = "",
     llm: GeminiClient | None = None,
 ) -> Perception:
     """Run the single structured PERCEIVE/DECIDE call."""
@@ -157,7 +163,7 @@ async def perceive(
         else {"known": False}
     )
     system_instruction = build_perception_system_instruction(
-        snapshot, pending_action, customer_id
+        snapshot, pending_action, customer_id, memory_text
     )
     contents = _history_to_contents(history)
     perception = await client.generate_structured(

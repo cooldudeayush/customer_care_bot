@@ -22,6 +22,16 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _loads_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+    try:
+        data = json.loads(value)
+        return data if isinstance(data, list) else []
+    except (ValueError, TypeError):
+        return []
+
+
 @dataclass
 class Message:
     role: str  # 'user' | 'bot'
@@ -37,6 +47,16 @@ class SessionSummary:
     started_at: str
     updated_at: str
     message_count: int = 0
+
+
+@dataclass
+class CustomerMemoryRecord:
+    customer_id: str
+    summary: str | None
+    open_items: list[str]
+    preferences: list[str]
+    sentiment: str | None
+    last_interaction: str | None
 
 
 class ConversationStore:
@@ -215,6 +235,117 @@ class ConversationStore:
                 return int(row["n"]) if row else 0
 
         return await asyncio.to_thread(_op)
+
+    # -- cross-session memory (Phase 6) -------------------------------------
+    async def get_customer_memory(self, customer_id: str) -> CustomerMemoryRecord | None:
+        def _op() -> CustomerMemoryRecord | None:
+            with connect() as conn:
+                row = conn.execute(
+                    "SELECT * FROM customer_memory WHERE customer_id = ?", (customer_id,)
+                ).fetchone()
+                if row is None:
+                    return None
+                return CustomerMemoryRecord(
+                    customer_id=row["customer_id"],
+                    summary=row["summary"],
+                    open_items=_loads_list(row["open_items"]),
+                    preferences=_loads_list(row["preferences"]),
+                    sentiment=row["sentiment"],
+                    last_interaction=row["last_interaction"],
+                )
+
+        return await asyncio.to_thread(_op)
+
+    async def upsert_customer_memory(
+        self,
+        customer_id: str,
+        summary: str,
+        open_items: list[str],
+        preferences: list[str],
+        sentiment: str,
+    ) -> None:
+        def _op() -> None:
+            with connect() as conn:
+                conn.execute(
+                    "INSERT INTO customer_memory "
+                    "(customer_id, summary, open_items, preferences, sentiment, last_interaction) "
+                    "VALUES (?,?,?,?,?,?) "
+                    "ON CONFLICT(customer_id) DO UPDATE SET summary=excluded.summary, "
+                    "open_items=excluded.open_items, preferences=excluded.preferences, "
+                    "sentiment=excluded.sentiment, last_interaction=excluded.last_interaction",
+                    (
+                        customer_id,
+                        summary,
+                        json.dumps(open_items or []),
+                        json.dumps(preferences or []),
+                        sentiment,
+                        _now(),
+                    ),
+                )
+                conn.commit()
+
+        await asyncio.to_thread(_op)
+
+    async def get_prior_unsummarized_session(
+        self, customer_id: str, exclude_session_id: str
+    ) -> str | None:
+        """Most-recent prior session for this customer that has messages and
+        hasn't been summarized yet (the one to digest when they return)."""
+
+        def _op() -> str | None:
+            with connect() as conn:
+                row = conn.execute(
+                    "SELECT c.session_id FROM conversations c "
+                    "WHERE c.customer_id = ? AND c.session_id != ? AND c.summarized = 0 "
+                    "AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = c.session_id) "
+                    "ORDER BY c.updated_at DESC LIMIT 1",
+                    (customer_id, exclude_session_id),
+                ).fetchone()
+                return row["session_id"] if row else None
+
+        return await asyncio.to_thread(_op)
+
+    async def mark_summarized(self, session_id: str) -> None:
+        def _op() -> None:
+            with connect() as conn:
+                conn.execute(
+                    "UPDATE conversations SET summarized = 1 WHERE session_id = ?",
+                    (session_id,),
+                )
+                conn.commit()
+
+        await asyncio.to_thread(_op)
+
+    def seed_demo_memory(
+        self,
+        customer_id: str,
+        summary: str,
+        open_items: list[str],
+        preferences: list[str],
+        sentiment: str,
+    ) -> None:
+        """Seed a starter memory ONLY if the customer has none (sync; startup use).
+        Makes the cross-session recall demo work on the very first session."""
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM customer_memory WHERE customer_id = ?", (customer_id,)
+            ).fetchone()
+            if row is not None:
+                return
+            conn.execute(
+                "INSERT INTO customer_memory "
+                "(customer_id, summary, open_items, preferences, sentiment, last_interaction) "
+                "VALUES (?,?,?,?,?,?)",
+                (
+                    customer_id,
+                    summary,
+                    json.dumps(open_items),
+                    json.dumps(preferences),
+                    sentiment,
+                    _now(),
+                ),
+            )
+            conn.commit()
 
 
 # Process-wide store instance.

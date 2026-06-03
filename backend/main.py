@@ -53,6 +53,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         seed()
         logger.info("Seeded mock business DB.")
 
+    # Phase 6: seed a starter long-term memory for the demo customer (only if
+    # absent) so cross-session recall works on the very first session.
+    store.seed_demo_memory(
+        "cust_demo",
+        summary=(
+            "Aarav Sharma previously contacted us about order #1190 (a Cotton "
+            "T-Shirt) arriving late; it has since been delivered."
+        ),
+        open_items=["Confirm the previously-delayed order #1190 arrived safely"],
+        preferences=[],
+        sentiment="was frustrated about the delay; likely relieved now",
+    )
+
     logger.info(
         "Starting %s [env=%s, model=%s, gemini_configured=%s]",
         settings.app_name,
