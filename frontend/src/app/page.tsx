@@ -1,19 +1,29 @@
 "use client";
 
 /**
- * Customer Care Bot — main chat page (Phase 0 skeleton).
+ * Customer Care Bot — main chat page (Phase 1).
  *
- * Layout: ChatGPT-style left SIDEBAR (list of past chat sessions + "New chat")
- * and a main chat area (message bubbles, typing indicator, input box).
+ * Streams replies token-by-token from the backend (SSE over fetch) and wires the
+ * ChatGPT-style sidebar to real persisted sessions:
+ *   - on load: GET /sessions populates the sidebar
+ *   - send:    POST /chat streams the reply; the session is persisted + titled
+ *   - click a past chat: GET /sessions/{id} reopens its transcript
+ *   - "+ New chat": starts a fresh session id
  *
- * Phase 0 keeps sessions in client state and calls the backend's placeholder
- * POST /chat. Phase 1 will: stream tokens (SSE), and persist/list sessions from
- * the backend's `conversations` table (GET /sessions) — the sidebar UI here is
- * already shaped for that swap.
+ * Customer auth isn't built yet, so all sessions belong to a fixed demo customer
+ * (Phase 6 makes this real).
  */
 
-import { useEffect, useRef, useState } from "react";
-import { sendChat, checkHealth } from "@/lib/api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  checkHealth,
+  getSession,
+  listSessions,
+  streamChat,
+  type SessionSummary,
+} from "@/lib/api";
+
+const CUSTOMER_ID = "cust_demo";
 
 type Role = "user" | "bot";
 
@@ -23,84 +33,135 @@ interface Message {
   text: string;
 }
 
-interface Session {
-  id: string;
-  title: string;
-  messages: Message[];
-}
-
-let idCounter = 0;
-const nextId = () => `${Date.now()}-${idCounter++}`;
-
-function newSession(): Session {
-  return { id: nextId(), title: "New chat", messages: [] };
-}
+const uuid = () =>
+  typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
 
 export default function ChatPage() {
-  const [sessions, setSessions] = useState<Session[]>(() => [newSession()]);
-  const [activeId, setActiveId] = useState<string>(() => sessions[0].id);
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [activeId, setActiveId] = useState<string>(() => uuid());
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const [backendUp, setBackendUp] = useState<boolean | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const active = sessions.find((s) => s.id === activeId) ?? sessions[0];
-
-  // Backend liveness badge.
-  useEffect(() => {
-    checkHealth().then(setBackendUp);
+  const refreshSessions = useCallback(async () => {
+    setSessions(await listSessions(CUSTOMER_ID));
   }, []);
 
-  // Auto-scroll to the newest message.
+  // Initial load: backend health + existing sessions.
+  useEffect(() => {
+    checkHealth().then(setBackendUp);
+    refreshSessions();
+  }, [refreshSessions]);
+
+  // Auto-scroll to the newest content.
   useEffect(() => {
     scrollRef.current?.scrollTo({
       top: scrollRef.current.scrollHeight,
       behavior: "smooth",
     });
-  }, [active.messages.length, sending]);
+  }, [messages, sending]);
 
-  function patchActive(update: (s: Session) => Session) {
-    setSessions((prev) => prev.map((s) => (s.id === activeId ? update(s) : s)));
-  }
+  const activeInList = sessions.some((s) => s.session_id === activeId);
+  const draftTitle =
+    messages.find((m) => m.role === "user")?.text.slice(0, 40) || "New chat";
+  const sidebarItems = activeInList
+    ? sessions
+    : [
+        {
+          session_id: activeId,
+          title: draftTitle,
+        } as Pick<SessionSummary, "session_id" | "title">,
+        ...sessions,
+      ];
 
   function handleNewChat() {
-    const s = newSession();
-    setSessions((prev) => [s, ...prev]);
-    setActiveId(s.id);
+    if (sending) return;
+    setActiveId(uuid());
+    setMessages([]);
     setInput("");
+  }
+
+  async function handleSelect(id: string) {
+    if (sending || id === activeId) return;
+    setActiveId(id);
+    setMessages([]);
+    setLoadingHistory(true);
+    const detail = await getSession(id);
+    setLoadingHistory(false);
+    if (detail) {
+      setMessages(
+        detail.messages.map((m, i) => ({
+          // Stable key across reloads (index within this session) so React
+          // doesn't remount every message bubble each time a chat is reopened.
+          id: `${id}:${i}`,
+          role: m.role === "bot" ? "bot" : "user",
+          text: m.content,
+        })),
+      );
+    }
   }
 
   async function handleSend() {
     const text = input.trim();
-    if (!text || sending) return;
+    // Don't allow a send while a stream is in flight or while a past chat's
+    // history is still loading (otherwise the turn lands on the wrong session).
+    if (!text || sending || loadingHistory) return;
 
-    const userMsg: Message = { id: nextId(), role: "user", text };
-    // Title a fresh chat from its first message.
-    patchActive((s) => ({
-      ...s,
-      title: s.messages.length === 0 ? text.slice(0, 40) : s.title,
-      messages: [...s.messages, userMsg],
-    }));
+    const botId = uuid();
+    setMessages((prev) => [
+      ...prev,
+      { id: uuid(), role: "user", text },
+      { id: botId, role: "bot", text: "" },
+    ]);
     setInput("");
     setSending(true);
 
-    try {
-      const res = await sendChat({ message: text, session_id: activeId });
-      const botMsg: Message = { id: nextId(), role: "bot", text: res.reply };
-      patchActive((s) => ({ ...s, messages: [...s.messages, botMsg] }));
-    } catch (err) {
-      const botMsg: Message = {
-        id: nextId(),
-        role: "bot",
-        text:
-          "⚠️ I couldn't reach the backend. Make sure it's running on " +
-          "http://localhost:8000 (uvicorn). Details: " +
-          (err instanceof Error ? err.message : String(err)),
-      };
-      patchActive((s) => ({ ...s, messages: [...s.messages, botMsg] }));
-    } finally {
-      setSending(false);
-    }
+    const appendToBot = (chunk: string) =>
+      setMessages((prev) =>
+        prev.map((m) => (m.id === botId ? { ...m, text: m.text + chunk } : m)),
+      );
+    const setBot = (value: string) =>
+      setMessages((prev) =>
+        prev.map((m) => (m.id === botId ? { ...m, text: value } : m)),
+      );
+
+    await streamChat(
+      { message: text, session_id: activeId, customer_id: CUSTOMER_ID },
+      {
+        onToken: appendToBot,
+        onDone: (e) => {
+          // Reflect the (possibly new) session + title in the sidebar.
+          setSessions((prev) => {
+            const exists = prev.some((s) => s.session_id === e.session_id);
+            if (exists) {
+              return prev.map((s) =>
+                s.session_id === e.session_id ? { ...s, title: e.title } : s,
+              );
+            }
+            const now = new Date().toISOString();
+            return [
+              {
+                session_id: e.session_id,
+                customer_id: CUSTOMER_ID,
+                title: e.title,
+                started_at: now,
+                updated_at: now,
+                message_count: 2,
+              },
+              ...prev,
+            ];
+          });
+        },
+        onError: (msg) => setBot(`⚠️ ${msg}`),
+      },
+    );
+
+    setSending(false);
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -117,7 +178,8 @@ export default function ChatPage() {
         <div className="p-3">
           <button
             onClick={handleNewChat}
-            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium transition hover:bg-slate-100"
+            disabled={sending}
+            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium transition hover:bg-slate-100 disabled:opacity-40"
           >
             + New chat
           </button>
@@ -126,12 +188,15 @@ export default function ChatPage() {
           Chats
         </div>
         <nav className="flex-1 overflow-y-auto px-2 pb-3">
-          {sessions.map((s) => (
+          {sidebarItems.length === 0 && (
+            <p className="px-3 py-2 text-sm text-slate-400">No chats yet.</p>
+          )}
+          {sidebarItems.map((s) => (
             <button
-              key={s.id}
-              onClick={() => setActiveId(s.id)}
+              key={s.session_id}
+              onClick={() => handleSelect(s.session_id)}
               className={`mb-1 block w-full truncate rounded-lg px-3 py-2 text-left text-sm transition ${
-                s.id === activeId
+                s.session_id === activeId
                   ? "bg-slate-200 font-medium"
                   : "text-slate-600 hover:bg-slate-100"
               }`}
@@ -172,14 +237,19 @@ export default function ChatPage() {
 
         <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-6">
           <div className="mx-auto flex max-w-2xl flex-col gap-4">
-            {active.messages.length === 0 && (
+            {loadingHistory && (
+              <p className="mt-10 text-center text-sm text-slate-400">
+                Loading conversation…
+              </p>
+            )}
+            {!loadingHistory && messages.length === 0 && (
               <div className="mt-20 text-center text-slate-400">
                 <p className="text-sm">
                   Start a conversation. Try: “What is your refund policy?”
                 </p>
               </div>
             )}
-            {active.messages.map((m) => (
+            {messages.map((m) => (
               <div
                 key={m.id}
                 className={`flex ${
@@ -193,19 +263,10 @@ export default function ChatPage() {
                       : "border border-slate-200 bg-white text-slate-800"
                   }`}
                 >
-                  {m.text}
+                  {m.text || (m.role === "bot" && sending ? "…" : "")}
                 </div>
               </div>
             ))}
-            {sending && (
-              <div className="flex justify-start">
-                <div className="flex items-center gap-1 rounded-2xl border border-slate-200 bg-white px-4 py-3">
-                  <span className="h-2 w-2 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.3s]" />
-                  <span className="h-2 w-2 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.15s]" />
-                  <span className="h-2 w-2 animate-bounce rounded-full bg-slate-400" />
-                </div>
-              </div>
-            )}
           </div>
         </div>
 
@@ -224,7 +285,7 @@ export default function ChatPage() {
               disabled={sending || !input.trim()}
               className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-40"
             >
-              Send
+              {sending ? "…" : "Send"}
             </button>
           </div>
         </div>

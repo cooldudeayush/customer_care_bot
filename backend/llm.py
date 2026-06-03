@@ -178,12 +178,17 @@ class GeminiClient:
 
     async def stream(
         self,
-        prompt: str,
+        contents: Any,
         *,
         system_instruction: str | None = None,
         temperature: float = 0.7,
     ) -> AsyncIterator[str]:
         """Yield reply text chunk-by-chunk (for SSE streaming in Phase 1).
+
+        ``contents`` may be a plain prompt string OR a multi-turn list of
+        ``{"role": "user"|"model", "parts": [{"text": ...}]}`` dicts (the SDK
+        coerces both). The agent loop passes the full transcript this way so the
+        stateless backend gets proper multi-turn context every call.
 
         The SDK's streaming generator is sync; we drain it on a worker thread and
         hand chunks back to the event loop one at a time. Rate-limit backoff is
@@ -198,28 +203,38 @@ class GeminiClient:
             response_schema=None,
         )
 
-        def _open_stream():
-            return client.models.generate_content_stream(
-                model=self._settings.gemini_model,
-                contents=prompt,
-                config=config,
-            )
-
-        generator = await self._with_backoff(_open_stream)
+        sentinel = object()
 
         def _next(gen):
             try:
                 return next(gen)
             except StopIteration:
-                return None
+                return sentinel
 
-        while True:
-            chunk = await asyncio.to_thread(_next, generator)
-            if chunk is None:
-                break
-            text = getattr(chunk, "text", None)
-            if text:
-                yield text
+        def _open_and_first():
+            # Opening the stream is lazy — the HTTP request actually fires on the
+            # first next(). So we open AND pull the first chunk under one backoff
+            # guard: a 429 here retries by cleanly re-opening the whole stream.
+            gen = client.models.generate_content_stream(
+                model=self._settings.gemini_model,
+                contents=contents,
+                config=config,
+            )
+            return gen, _next(gen)
+
+        generator, chunk = await self._with_backoff(_open_and_first)
+        try:
+            while chunk is not sentinel:
+                text = getattr(chunk, "text", None)
+                if text:
+                    yield text
+                chunk = await asyncio.to_thread(_next, generator)
+        finally:
+            # Close the sync SDK generator even if the client disconnects mid-
+            # stream (otherwise the worker thread / SDK resources can leak).
+            close = getattr(generator, "close", None)
+            if callable(close):
+                await asyncio.to_thread(close)
 
     async def ping(self) -> str:
         """Tiny liveness call used by GET /health/llm to verify key + SDK."""
