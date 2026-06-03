@@ -114,9 +114,13 @@ class AgentLoop:
             prior = await self.store.get_prior_unsummarized_session(customer_id, session_id)
             if prior:
                 try:
-                    await summarize_session(prior, customer_id, store=self.store, llm=self.llm)
+                    # Bounded so a slow/hung summary never blocks the reply for long.
+                    await asyncio.wait_for(
+                        summarize_session(prior, customer_id, store=self.store, llm=self.llm),
+                        timeout=15,
+                    )
                 except Exception:  # noqa: BLE001 - memory is best-effort
-                    logger.exception("Prior-session summarization failed")
+                    logger.exception("Prior-session summarization failed/timed out")
         memory_rec = (
             await self.store.get_customer_memory(customer_id) if customer_id else None
         )

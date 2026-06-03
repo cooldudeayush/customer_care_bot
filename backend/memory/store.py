@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from .db import connect, init_db
+
+logger = logging.getLogger("ccb.store")
 
 
 def _now() -> str:
@@ -29,6 +32,7 @@ def _loads_list(value: str | None) -> list[str]:
         data = json.loads(value)
         return data if isinstance(data, list) else []
     except (ValueError, TypeError):
+        logger.warning("Corrupt JSON list in customer memory; ignoring: %.80r", value)
         return []
 
 
@@ -264,6 +268,12 @@ class ConversationStore:
         preferences: list[str],
         sentiment: str,
     ) -> None:
+        # Bound the stored memory so it can't grow unbounded over many sessions
+        # (it's injected into every prompt).
+        summary = (summary or "")[:1200]
+        open_items = [str(x)[:200] for x in (open_items or [])][:10]
+        preferences = [str(x)[:200] for x in (preferences or [])][:8]
+
         def _op() -> None:
             with connect() as conn:
                 conn.execute(
@@ -276,8 +286,8 @@ class ConversationStore:
                     (
                         customer_id,
                         summary,
-                        json.dumps(open_items or []),
-                        json.dumps(preferences or []),
+                        json.dumps(open_items),
+                        json.dumps(preferences),
                         sentiment,
                         _now(),
                     ),
@@ -298,7 +308,7 @@ class ConversationStore:
                     "SELECT c.session_id FROM conversations c "
                     "WHERE c.customer_id = ? AND c.session_id != ? AND c.summarized = 0 "
                     "AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = c.session_id) "
-                    "ORDER BY c.updated_at DESC LIMIT 1",
+                    "ORDER BY c.updated_at DESC, c.session_id DESC LIMIT 1",
                     (customer_id, exclude_session_id),
                 ).fetchone()
                 return row["session_id"] if row else None
@@ -325,17 +335,13 @@ class ConversationStore:
         sentiment: str,
     ) -> None:
         """Seed a starter memory ONLY if the customer has none (sync; startup use).
-        Makes the cross-session recall demo work on the very first session."""
+        Makes the cross-session recall demo work on the very first session.
+        Atomic via ON CONFLICT DO NOTHING (won't clobber real memory)."""
         with connect() as conn:
-            row = conn.execute(
-                "SELECT 1 FROM customer_memory WHERE customer_id = ?", (customer_id,)
-            ).fetchone()
-            if row is not None:
-                return
             conn.execute(
                 "INSERT INTO customer_memory "
                 "(customer_id, summary, open_items, preferences, sentiment, last_interaction) "
-                "VALUES (?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?) ON CONFLICT(customer_id) DO NOTHING",
                 (
                     customer_id,
                     summary,

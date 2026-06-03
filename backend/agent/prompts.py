@@ -69,7 +69,8 @@ def memory_block(mem) -> str:
     lines.append(
         'Use this naturally: proactively follow up on an open item when relevant '
         '(e.g., "Last time you reached out about a delayed order — did that get '
-        'sorted?"). Never invent anything beyond what\'s stated here.'
+        'sorted?"). Open items may reference earlier orders; you may mention those '
+        "order ids. Never invent anything beyond what's stated here."
     )
     return "\n".join(lines)
 

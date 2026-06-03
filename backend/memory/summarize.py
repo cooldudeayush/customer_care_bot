@@ -43,7 +43,9 @@ the EXISTING memory and a NEW conversation, produce an UPDATED memory that MERGE
   conversation resolved; add new unresolved ones.
 - preferences: durable preferences/notes worth remembering.
 - sentiment: their overall recent sentiment.
-Be factual and brief. Do not invent details that aren't in the conversation."""
+Be factual and brief. Do not invent details that aren't in the conversation.
+Never put full payment card numbers, passwords, OTPs, or other sensitive
+identifiers in the memory — refer to them only in masked or general terms."""
 
 
 def _existing_text(mem: CustomerMemoryRecord | None) -> str:
