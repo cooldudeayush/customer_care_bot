@@ -1,0 +1,609 @@
+================================================================================
+  AGENTIC CUSTOMER CARE BOT — ARCHITECTURE & EXECUTION PLAN
+  Hackathon Category: Customer Care Bot (Agentic, Proactive)
+  Primary LLM: Google Gemini Flash (free tier)
+  Knowledge Layer: Hybrid — LightRAG (docs) + Neo4j Customer Graph (operations)
+================================================================================
+
+HOW TO READ THIS DOCUMENT
+-------------------------
+Sections 1-3  : The "why" and the big picture. Read once.
+Section 4     : The component-by-component breakdown. Your reference map.
+Section 5     : Feature -> Component mapping. Where each feature actually lives.
+Section 6     : The data model (graph schema + stores).
+Section 7     : The agent loop. The heart of the system.
+Section 8     : Tool / action definitions (agentic resolution).
+Section 9     : The "other aspects" — guardrails, security, errors, limits.
+Section 10    : EXECUTION ROADMAP. Build in this order. Start here when coding.
+Section 11    : Repo structure (for the 20% Documentation score).
+Section 12    : Demo plan (for compliance + Documentation score).
+Section 13    : Rubric mapping. What earns which points.
+
+A note on philosophy: build a thin end-to-end slice that WORKS before adding
+differentiators. A talking-grounding-acting bot on Day 1 beats a half-built
+genius architecture on Day 3. The roadmap (Section 10) is ordered for this.
+
+
+================================================================================
+  1. THE CORE IDEA (recap, so the architecture has a north star)
+================================================================================
+
+This is NOT a chatbot that TELLS customers how to solve problems.
+It is a care agent that RESOLVES problems by taking real actions.
+
+Clichéd bot : "To get a refund, please go to Orders > Returns and..."
+This bot     : "I've checked order #1234 — it's within the 30-day window, so
+                I've issued your refund of Rs.1,499. You'll see it in 3-5 days.
+                Anything else?"
+
+Five differentiators, in priority order:
+  1. AGENTIC RESOLUTION  — the bot calls tools to actually DO things.
+  2. EMOTIONAL ADAPTATION — detects frustration/confusion, modulates tone.
+                            (NOT "always cheerful" — adaptive, which is smarter.)
+  3. GROUNDED + UNCERTAINTY-AWARE — never invents a policy; says "let me check".
+  4. CROSS-SESSION MEMORY — remembers the CUSTOMER, not just the chat.
+  5. GRACEFUL ESCALATION — knows its limits; hands off WITH a full summary.
+
+Plus: Hinglish / code-switching support (regional languages = future scope).
+
+
+================================================================================
+  2. HIGH-LEVEL ARCHITECTURE (the layers)
+================================================================================
+
+  +-----------------------------------------------------------------------+
+  |  CLIENT / UI LAYER                                                     |
+  |  Chat interface. Typing indicators, streaming responses, "feel".      |
+  |  (Next.js + Tailwind, or Streamlit for speed)                         |
+  +-----------------------------------------------------------------------+
+                                  |  (HTTP / WebSocket)
+                                  v
+  +-----------------------------------------------------------------------+
+  |  API / ORCHESTRATION LAYER  (FastAPI, Python)                         |
+  |  +-----------------------------------------------------------------+  |
+  |  |  AGENT LOOP (the brain) — see Section 7                         |  |
+  |  |  PERCEIVE -> RETRIEVE -> DECIDE -> ACT -> RESPOND -> REMEMBER   |  |
+  |  +-----------------------------------------------------------------+  |
+  |     |            |              |          |           |              |
+  |     v            v              v          v           v              |
+  |  Emotional   Knowledge      Decision    Tools/      Memory            |
+  |  Adaptation  Layer (RAG)    Engine      Actions     Layer             |
+  +-----------------------------------------------------------------------+
+        |              |             |           |            |
+        v              v             v           v            v
+  +----------+  +-------------+  +--------+  +--------+  +-------------+
+  | Gemini   |  | LightRAG    |  | Gemini |  | Mock   |  | Postgres /  |
+  | Flash    |  | (doc graph) |  | Flash  |  | Biz    |  | Supabase    |
+  | (LLM)    |  | + Neo4j     |  |        |  | APIs   |  | (memory +   |
+  |          |  | (cust graph)|  |        |  |        |  |  vector)    |
+  +----------+  +-------------+  +--------+  +--------+  +-------------+
+
+Design principle: the backend is STATELESS. All state (conversation, memory,
+graph) lives in external stores. This is what makes it scalable (Section 9) and
+is a strong point to call out for the Technical Architecture score.
+
+
+================================================================================
+  3. TECH STACK (concrete recommendations)
+================================================================================
+
+LAYER            CHOICE                      WHY / NOTES
+---------------  --------------------------  ----------------------------------
+Frontend         Next.js + Tailwind          Polished chat UX (UX is a judged
+                 (or Streamlit if time-poor) focus area). Streaming = "human feel".
+Backend          Python + FastAPI            Best RAG ecosystem; async; fast.
+LLM              Gemini Flash                Free, 1M context, multilingual,
+                 (google-generativeai SDK)   function calling. Confirmed free tier.
+Orchestration    LangGraph                   State-machine for the agent loop.
+                 (or a custom loop)          Clean, demonstrable, impresses judges.
+                                             Custom loop is fine if LangGraph is
+                                             a time sink — don't over-engineer.
+Doc retrieval    LightRAG (lightrag-hku)     "Not traditional RAG." Entity+vector
+                                             dual retrieval. Wire Gemini as its LLM.
+Customer graph   Neo4j AuraDB (free tier)    Relational reasoning over a customer's
+                 (or local Docker / NetworkX)orders/tickets/policies. The novelty.
+Relational +     Supabase (Postgres+pgvector)One store for memory + embeddings.
+vector store     (or SQLite + Chroma local)  Free tier; easy demo. SQLite = zero setup.
+Embeddings       Gemini text-embedding       Keeps it single-provider. Any model works.
+Mock biz APIs    FastAPI stub routes + seed  Simulated refund/order/shipping systems
+                 data in SQLite              so the bot has real actions to call.
+Deployment       Vercel (FE) + Render/Railway Public working demo link is MANDATORY
+                 (BE), or HuggingFace Spaces  (compliance). Set this up EARLY, not last.
+
+CRITICAL FREE-TIER CONSTRAINT (drives the design):
+  Gemini free tier ≈ 15 requests/minute. A naive turn that makes 5 separate LLM
+  calls (classify emotion, classify intent, pick tool, generate, summarize) caps
+  you at ~3 user turns/minute and WILL throttle during a live demo.
+  -> MITIGATION (build this in from the start):
+     - Collapse perception into ONE structured call: a single Gemini call using
+       function-calling / JSON mode that returns {emotion, intent(s), entities,
+       tool_decision} together.
+     - That's ~2 LLM calls per turn (perceive+decide, then generate) instead of 5.
+     - Add exponential backoff on 429 errors (1s, 2s, 4s, 8s).
+     - Cache embeddings; don't re-embed the doc corpus every run.
+
+
+================================================================================
+  4. COMPONENT-BY-COMPONENT BREAKDOWN
+================================================================================
+
+[A] CLIENT / UI LAYER
+    - Chat window with message bubbles, streaming token-by-token output.
+    - Typing indicator while the agent loop runs (sells the "human" feel).
+    - Subtle UI signals: a small "resolving..." state when a tool is firing,
+      a "handing you to a specialist" state on escalation.
+    - Optional: a side panel showing what the bot "knows" about you (pulled from
+      memory) — great demo eye-candy and reinforces the relationship angle.
+
+[B] ORCHESTRATION LAYER (FastAPI)
+    - One main endpoint: POST /chat  {session_id, customer_id, message}
+    - Loads conversation state + customer memory, runs the agent loop, returns
+      the response (stream if possible).
+    - Stateless: rehydrates everything from stores on each call.
+
+[C] AGENT LOOP  (detailed in Section 7)
+    - The controller. Sequences perception, retrieval, decision, action,
+      response, memory update. Implemented as a LangGraph state machine or a
+      plain async function.
+
+[D] EMOTIONAL ADAPTATION LAYER
+    - Input: latest user message + short recent history + sentiment trend.
+    - Output: an emotional read {state: angry|frustrated|confused|neutral|happy,
+      intensity: 1-5} plus a TONE DIRECTIVE injected into the generation prompt.
+    - Tone policy (examples):
+        angry/frustrated -> calm, apologetic, concise, lead with the fix, no
+                            cheerfulness, acknowledge the frustration first.
+        confused         -> patient, slow, step-by-step, define jargon, offer
+                            to do it for them.
+        neutral          -> warm, efficient, friendly.
+        happy            -> match the energy, brief, positive.
+    - Implementation: fold the emotion read into the single structured
+      perception call (don't spend a separate LLM call on it — see free-tier
+      constraint). The tone directive is just a few lines appended to the system
+      prompt for the generation step.
+    - This is your instinct ("stress-free, human") done the sophisticated way.
+
+[E] KNOWLEDGE / RETRIEVAL LAYER  (the hybrid "RAG") — see Section 6 for schema
+    Two retrieval sources, used together:
+
+    E1. DOCUMENT GRAPH (LightRAG) — unstructured knowledge
+        - Corpus: policy docs, FAQs, product manuals, troubleshooting guides.
+        - LightRAG builds an entity-relationship graph + vector index over these.
+        - Dual-level retrieval: low-level (specific facts) + high-level
+          (thematic / multi-hop questions). Handles "compositional" questions
+          that flat vector RAG fumbles.
+        - Answers: "What is the refund policy for electronics?"
+
+    E2. CUSTOMER OPERATIONAL GRAPH (Neo4j) — structured, live business state
+        - Nodes: Customer, Order, OrderItem, Product, Payment, Ticket, Policy.
+        - Edges model the customer's actual situation (see Section 6).
+        - The agent TRAVERSES this to reason about THIS customer.
+        - Answers: "Does customer C's order #1234 qualify for that policy?"
+
+    WHY BOTH (this is the showcase sentence):
+       "Your order #1234 contains item X, purchased 12 days ago — within our
+        30-day window — so yes, I can refund it now."
+       That requires: graph traversal (order->item->date) [E2]
+                     + policy retrieval (the 30-day rule)  [E1]
+                     + a tool call (issue refund)          [Section 8].
+       No single technique does all three. The combination is the architecture.
+
+[F] DECISION ENGINE
+    - Decides, per turn, the action type:
+        ANSWER    -> respond from retrieved knowledge (no side effects)
+        ACT       -> call one or more tools (agentic resolution)
+        CLARIFY   -> ask a follow-up (missing info / ambiguous)
+        CONFIRM   -> ask permission before an irreversible action
+        ESCALATE  -> hand off to a human
+    - Driven by the structured perception output. For ACT, it also extracts the
+      tool name(s) and arguments.
+    - Handles MULTI-INTENT: "return this AND change my address AND when's my
+      refund" -> a list of actions, executed in sequence, then one combined reply.
+
+[G] TOOLS / ACTIONS LAYER (agentic resolution) — see Section 8
+    - The functions the bot can call. Each is a real (mock) business operation.
+    - Backed by mock biz APIs over a seeded SQLite DB. Every action also writes
+      back to the Neo4j customer graph (e.g., a refund flips an order's status).
+
+[H] MEMORY LAYER
+    H1. SHORT-TERM (within a session)
+        - Full conversation transcript + a structured running state
+          (open intents, entities mentioned, actions taken this session).
+        - Gemini's 1M context can hold the raw transcript easily, but ALSO keep
+          the structured state so the agent doesn't re-derive it each turn.
+    H2. LONG-TERM (across sessions) — the "remember the customer" feature
+        - On session end (or periodically): summarize the session
+          (issue, resolution, sentiment, unresolved items, preferences) and
+          store it against the customer_id in Postgres.
+        - On session START: load the customer's memory and inject a brief
+          "what we know about this customer" block into the system prompt.
+        - Enables: "Last time you reached out about a delayed order — did that
+          get sorted?" This is the session->relationship upgrade.
+
+[I] ESCALATION / HANDOFF LAYER
+    - Triggers: tool failure, repeated dissatisfaction, out-of-scope request,
+      explicit "I want a human", high anger intensity that isn't resolving.
+    - On trigger: generate a HANDOFF PACKET = {customer summary, issue,
+      conversation summary, actions already taken, suggested next step,
+      current sentiment}. Route it to a (mock) human dashboard or emit it as a
+      ticket. The customer NEVER re-explains.
+    - Showing the bot knows when NOT to act is a maturity signal judges respect.
+
+[J] GUARDRAILS / GROUNDING LAYER — see Section 9
+    - Confirmation gates before money/irreversible actions.
+    - "I don't know -> let me check / escalate" instead of hallucinating.
+    - PII handling, input validation, tool-failure fallbacks.
+
+[K] OBSERVABILITY / LOGGING
+    - Log a structured TRACE per turn: perception output, retrieval hits,
+      decision, tools called + results, final response, latency, token counts.
+    - Doubles as: debugging aid + demo artifact + evidence of clean engineering
+      for the Documentation score.
+
+
+================================================================================
+  5. FEATURE  ->  COMPONENT  MAPPING (where each feature actually lives)
+================================================================================
+
+FEATURE                        LIVES IN          KEY TECH
+-----------------------------  ----------------  ------------------------------
+Agentic resolution             [G] Tools +       Gemini function calling +
+                               [F] Decision      mock biz APIs + Neo4j writeback
+Emotional adaptation           [D] Emotion       Gemini structured output +
+                                                 tone directive in prompt
+Grounded answers / no-halluc.  [E] Knowledge +   LightRAG + Neo4j + [J] guardrails
+                               [J] Guardrails
+Conversational, human feel     [A] UI +          Streaming + tone policy +
+                               [C] Agent loop    1M-context coherence
+Whole-chat context             [H1] Short-term   Structured state + Gemini context
+Cross-session memory           [H2] Long-term    Session summaries in Postgres
+Multi-intent handling          [F] Decision      Action list from perception
+Graceful escalation            [I] Handoff       Handoff packet + routing
+Hinglish / code-switching      [D]+[C] prompt    Gemini multilingual + system
+                                                 prompt instruction to mirror
+                                                 the customer's language mix
+"Not traditional RAG"          [E1] LightRAG     lightrag-hku entity+vector graph
+Relational reasoning (novel)   [E2] Neo4j        Cypher traversals
+
+
+================================================================================
+  6. DATA MODEL
+================================================================================
+
+6.1 CUSTOMER OPERATIONAL GRAPH (Neo4j) — node/edge schema
+-----------------------------------------------------------
+NODES (with sample properties):
+  Customer   {id, name, tier(regular|premium), language_pref, lifetime_value}
+  Order      {id, date, status(placed|shipped|delivered|cancelled|refunded),
+              total, channel}
+  OrderItem  {id, qty, price, return_status}
+  Product    {id, name, category, price, warranty_days}
+  Payment    {id, method, amount, status}
+  Ticket     {id, subject, status(open|resolved|escalated), sentiment, created}
+  Policy     {id, name, type(refund|return|warranty|shipping), window_days, rules}
+
+EDGES:
+  (Customer)-[:PLACED]->(Order)
+  (Order)-[:CONTAINS]->(OrderItem)
+  (OrderItem)-[:OF_PRODUCT]->(Product)
+  (Order)-[:PAID_WITH]->(Payment)
+  (Customer)-[:RAISED]->(Ticket)
+  (Ticket)-[:ABOUT]->(Order)
+  (Product)-[:GOVERNED_BY]->(Policy)
+  (Order)-[:REFUNDED_BY]->(Payment)   // created when a refund tool runs
+
+EXAMPLE REASONING QUERY (Cypher) — "can I refund item X on order 1234?":
+  MATCH (o:Order {id:'1234'})-[:CONTAINS]->(i:OrderItem)-[:OF_PRODUCT]->(p:Product)
+        -[:GOVERNED_BY]->(pol:Policy {type:'refund'})
+  RETURN o.date, p.name, pol.window_days
+  // The agent compares (today - o.date) to pol.window_days to decide eligibility.
+
+6.2 DOCUMENT CORPUS (LightRAG)
+-----------------------------------------------------------
+  - Plain text / markdown files: refund_policy.md, shipping_faq.md,
+    product_troubleshooting.md, returns_guide.md, warranty_terms.md.
+  - Ingest once at startup; LightRAG builds + persists its graph + vector index.
+  - Keep this corpus small and clean for the demo — quality over volume.
+
+6.3 MEMORY STORE (Postgres / Supabase)
+-----------------------------------------------------------
+  TABLE conversations (session_id, customer_id, started_at, ended_at, transcript)
+  TABLE customer_memory (customer_id, summary, preferences, open_items,
+                         sentiment_history, last_interaction)
+  TABLE turn_traces (id, session_id, turn_no, perception, decision, tools,
+                     response, latency_ms, tokens)  // observability
+
+6.4 MOCK BUSINESS DB (SQLite) — what the tools actually read/write
+-----------------------------------------------------------
+  Mirrors the graph's operational data in tabular form for the mock APIs:
+  orders, order_items, products, payments, tickets. Seed it with 5-10 realistic
+  customers and orders so the demo has something to act on.
+
+
+================================================================================
+  7. THE AGENT LOOP (the heart) — what happens on every user turn
+================================================================================
+
+  STATE 1 — PERCEIVE  [1 Gemini call, structured output]
+    Input : user message + recent history + customer memory snippet
+    Output: {
+              emotion: {state, intensity},
+              intents: [list],              // multi-intent supported
+              entities: {order_ids, products, ...},
+              tool_decision: {action_type, tools:[{name, args}]},
+              needs_clarification: bool,
+              clarification_question: str|null
+            }
+
+  STATE 2 — RETRIEVE  [no LLM call; parallel lookups]
+    - Pull relevant policy/FAQ chunks from LightRAG (for the intents).
+    - Traverse Neo4j for the referenced customer/order entities.
+    - Pull short-term state + long-term customer memory.
+
+  STATE 3 — DECIDE  [logic, uses STATE 1 output]
+    - Route to: ANSWER | ACT | CLARIFY | CONFIRM | ESCALATE.
+    - For ACT on irreversible ops (refund, cancel) -> route to CONFIRM first.
+    - For multi-intent -> queue the actions.
+
+  STATE 4 — ACT  [tool execution; no LLM call]
+    - Execute queued tool(s) against mock biz APIs.
+    - Write results back to Neo4j (status changes) + log to trace.
+    - On tool failure -> fallback (retry once, else create ticket / escalate).
+
+  STATE 5 — RESPOND  [1 Gemini call, generation]
+    Input : retrieved knowledge + tool results + TONE DIRECTIVE (from emotion)
+            + language directive (mirror Hinglish if user used it)
+            + grounding instruction ("only state facts present in context;
+              if unknown, say you'll check / escalate")
+    Output: the final natural-language reply (streamed to UI).
+
+  STATE 6 — REMEMBER  [no LLM call mid-session; summarize at session end]
+    - Update short-term structured state (actions taken, open items).
+    - On session end: 1 Gemini call to produce the long-term summary -> Postgres.
+
+  Net LLM calls per turn: ~2 (PERCEIVE + RESPOND). Stays under free-tier limits.
+
+  CONDITIONAL EDGES (LangGraph view):
+    PERCEIVE -> (needs_clarification?) -> CLARIFY -> end turn
+    DECIDE   -> (irreversible action?) -> CONFIRM -> end turn (await yes/no)
+    DECIDE   -> (out of scope / failing?) -> ESCALATE -> handoff packet -> end
+
+
+================================================================================
+  8. TOOL / ACTION DEFINITIONS (agentic resolution)
+================================================================================
+
+Define these as Gemini function-calling schemas. Each maps to a mock biz API
+and (where it changes state) a Neo4j writeback. Start with the starred ones.
+
+  *check_order_status(order_id)            -> read; safe
+  *get_refund_eligibility(order_id, item)  -> read; runs the graph+policy logic
+  *issue_refund(order_id, item, amount)    -> WRITE; requires CONFIRM gate
+   reschedule_delivery(order_id, new_date) -> write
+   update_address(customer_id, address)    -> write
+  *cancel_order(order_id)                  -> WRITE; requires CONFIRM gate
+   track_shipment(order_id)                -> read; safe
+  *create_ticket(customer_id, subject, body, priority) -> write; also the
+                                             fallback when a tool fails
+   escalate_to_human(session_id, reason)   -> emits the handoff packet
+   lookup_policy(topic)                    -> thin wrapper over LightRAG
+
+CONFIRMATION RULE: any tool that moves money or is irreversible (issue_refund,
+cancel_order) MUST go through STATE 3 CONFIRM — the bot states what it's about
+to do and waits for an explicit yes. This is both a guardrail and a trust signal.
+
+Each tool returns a STRUCTURED result {success, data, error}. The RESPOND step
+turns that into natural language with the right tone — it never makes up an
+outcome the tool didn't return.
+
+
+================================================================================
+  9. OTHER ASPECTS (guardrails, security, errors, scale, testing)
+================================================================================
+
+9.1 GROUNDING / ANTI-HALLUCINATION
+  - System prompt for RESPOND: "Only state facts present in the provided context
+    (policy chunks, graph data, tool results). If the answer isn't there, say you
+    need to check or escalate — never guess a policy, price, or outcome."
+  - If LightRAG + graph return nothing relevant -> CLARIFY or ESCALATE, don't
+    fabricate. A bot that invents a refund policy on stage is a demo disaster.
+
+9.2 CONFIRMATION GATES
+  - Money / irreversible actions require explicit user confirmation (Section 8).
+
+9.3 SECURITY & PII
+  - Never echo full payment details; mask (e.g., card ending 1234).
+  - Mask PII in logs/traces. Keep secrets in .env (never commit). Provide
+    .env.example in the repo.
+  - Validate/sanitize tool arguments before hitting the mock APIs.
+
+9.4 ERROR HANDLING & GRACEFUL DEGRADATION
+  - Tool fails -> retry once -> else create_ticket + tell the user honestly +
+    optionally escalate. Never leave the user with a raw stack trace.
+  - LLM 429 (rate limit) -> exponential backoff, then a polite "one moment".
+  - Neo4j / store unreachable -> degrade to LightRAG-only answers + flag.
+
+9.5 RATE-LIMIT DISCIPLINE (free tier)
+  - ~2 LLM calls/turn by design (Section 7). Don't add more without batching.
+  - Backoff on 429s. Cache the LightRAG index between runs.
+
+9.6 TESTING
+  - Unit-test each tool against the mock DB.
+  - Scenario tests: scripted conversations (the demo scenario in Section 12)
+    asserted end-to-end. These also serve as living documentation.
+
+9.7 SCALABILITY (talking point for the 25% Architecture score)
+  - Stateless backend -> horizontally scalable; state is externalized.
+  - Stores swappable (SQLite->Postgres, NetworkX->Neo4j AuraDB) without code
+    changes if you keep a thin data-access layer.
+  - Tools are modular -> new business actions = new function, no core changes.
+
+9.8 CONFIG
+  - .env for keys (GEMINI_API_KEY, NEO4J_URI/USER/PASS, DB_URL).
+  - A single config module; no hardcoded secrets or URLs.
+
+
+================================================================================
+  10. EXECUTION ROADMAP  *** START CODING HERE — BUILD IN THIS ORDER ***
+================================================================================
+
+The order front-loads a working slice, then layers differentiators. After each
+phase you have something demoable. If you run out of time, you still have a
+coherent product (not a pile of half-features).
+
+PHASE 0 — FOUNDATION
+  [ ] Repo + structure (Section 11). FastAPI skeleton. .env + config.
+  [ ] Gemini "hello world" call working. Pick Next.js or Streamlit for UI.
+  [ ] Deploy the empty skeleton to get the PUBLIC URL working NOW (compliance).
+
+PHASE 1 — CORE CONVERSATIONAL LOOP  (a bot that talks + remembers the chat)
+  [ ] POST /chat endpoint. Short-term conversation state.
+  [ ] Single Gemini generation call. Stream to UI. Typing indicator.
+  [ ] >>> MILESTONE: a coherent multi-turn chat. This is your fallback demo.
+
+PHASE 2 — GROUNDING (make it factual)
+  [ ] Write the doc corpus (policies/FAQs). Stand up LightRAG; ingest corpus.
+  [ ] Wire retrieval into the prompt + the grounding instruction (9.1).
+  [ ] >>> MILESTONE: bot answers policy questions from real docs, not vibes.
+
+PHASE 3 — AGENTIC RESOLUTION (the headline — do this before the fancy graph)
+  [ ] Mock biz APIs + seed SQLite. Define the starred tools (Section 8).
+  [ ] Function calling in the PERCEIVE/DECIDE step. CONFIRM gate for refunds.
+  [ ] >>> MILESTONE: bot ISSUES a refund / checks an order. This wins the 30%.
+
+PHASE 4 — CUSTOMER KNOWLEDGE GRAPH (the novelty / relational reasoning)
+  [ ] Stand up Neo4j; load the schema (6.1); mirror the seed data.
+  [ ] Add get_refund_eligibility using the Cypher traversal + policy lookup.
+  [ ] Tool writebacks update the graph (refund -> status flips).
+  [ ] >>> MILESTONE: the showcase sentence works end-to-end.
+
+PHASE 5 — EMOTIONAL ADAPTATION
+  [ ] Fold emotion read into the structured PERCEIVE call. Tone directives (D).
+  [ ] >>> MILESTONE: angry vs confused customer get visibly different tone.
+
+PHASE 6 — CROSS-SESSION MEMORY
+  [ ] Session-end summary -> Postgres. Session-start memory injection.
+  [ ] >>> MILESTONE: "Last time you contacted us about..." works.
+
+PHASE 7 — ESCALATION / HANDOFF
+  [ ] Triggers + handoff packet + a simple human-view (or ticket output).
+  [ ] >>> MILESTONE: bot hands off with a full summary; user doesn't repeat.
+
+PHASE 8 — MULTI-INTENT + HINGLISH
+  [ ] Action queue for compound requests. Language-mirroring directive.
+  [ ] >>> MILESTONE: "return this AND change address" + a Hinglish exchange.
+
+PHASE 9 — GUARDRAILS, POLISH, OBSERVABILITY
+  [ ] Error fallbacks, PII masking, turn traces, the "what we know" UI panel.
+
+PHASE 10 — DEMO + DOCS + DEPLOY (do NOT leave to the last hour)
+  [ ] README (Section 11), architecture diagram, demo video/script (Section 12).
+  [ ] Final deploy. Verify the PUBLIC link works in an incognito window.
+
+PRIORITY IF TIME RUNS SHORT: Phases 0-4 give you the highest-scoring core
+(agentic + grounded + graph). 5-8 are differentiators. 9 is polish. 10 is
+non-negotiable (compliance + 20% of the score).
+
+
+================================================================================
+  11. REPO STRUCTURE (directly serves the 20% Documentation score)
+================================================================================
+
+  customer-care-bot/
+  ├── README.md                  <- problem, demo link, setup, architecture, screenshots
+  ├── .env.example               <- all required env vars, no secrets
+  ├── docs/
+  │   ├── architecture.md        <- this plan, polished + the diagram
+  │   └── demo_script.md         <- the scenario you'll run for judges
+  ├── frontend/                  <- Next.js / Streamlit UI
+  ├── backend/
+  │   ├── main.py                <- FastAPI app, /chat endpoint
+  │   ├── agent/                 <- the loop: perceive, decide, act, respond, remember
+  │   ├── knowledge/             <- LightRAG setup + Neo4j client + retrieval
+  │   ├── tools/                 <- tool definitions + mock biz APIs
+  │   ├── memory/                <- short-term state + long-term store
+  │   ├── emotion/               <- emotion read + tone policy
+  │   └── config.py
+  ├── data/
+  │   ├── corpus/                <- policy/FAQ markdown for LightRAG
+  │   └── seed/                  <- SQLite seed + Neo4j load script
+  └── tests/                     <- tool tests + scenario tests
+
+  README must contain (judges check this):
+    - One-line problem statement + who it helps.
+    - The WORKING PUBLIC DEMO LINK (and a fallback video link).
+    - Setup steps that actually run from a clean clone.
+    - Architecture diagram (export the Section 2 diagram).
+    - What's novel (the hybrid graph + agentic resolution story).
+    - Screenshots / GIF of the demo scenario.
+
+  COMPLIANCE: repo PUBLIC, every link working, no private/broken links.
+  (Incomplete details or private links = automatic rejection per the brief.)
+
+
+================================================================================
+  12. DEMO PLAN (one scenario that shows off everything)
+================================================================================
+
+Scenario: "The angry double-charge customer who also needs an address change."
+This single flow exercises every differentiator — script it, rehearse it, record it.
+
+  1. Customer opens angry:  "I was charged TWICE for order 1234 and I'm furious.
+     Also I need my delivery address changed, kuch toh karo."   (Hinglish + multi-intent + anger)
+       -> Emotion layer detects anger -> calm, apologetic tone, no cheer.
+       -> Multi-intent detected: [billing dispute, address change].
+       -> Mirrors light Hinglish in the reply.
+
+  2. Bot traverses the graph: order 1234 -> payments -> finds a duplicate charge.
+       -> Grounded in real (mock) data, not guessed.
+
+  3. Bot proposes the fix and CONFIRMS: "I can see the duplicate charge of
+     Rs.1,499 and I can refund it now — shall I go ahead?"   (confirmation gate)
+       -> Customer says yes -> issue_refund runs -> graph status flips.
+
+  4. Bot handles the second intent: updates the delivery address.   (multi-intent resolution)
+
+  5. Bot recalls memory: "I also see your earlier order was delayed last month —
+     that one's been delivered now, just confirming it reached you."  (cross-session memory)
+
+  6. Customer asks something out of scope (e.g., a legal/warranty edge case the
+     bot can't resolve).
+       -> Bot escalates with a handoff packet summarizing everything.   (graceful escalation)
+       -> "I've summarized everything for a specialist — you won't need to repeat any of this."
+
+  End state: angry customer leaves calm, double-charge refunded, address fixed,
+  nothing repeated, clean human handoff. That arc is the whole pitch in 90 seconds.
+
+  Record this as a video AND have it runnable live. Put both in the README.
+
+
+================================================================================
+  13. RUBRIC MAPPING (what earns which points)
+================================================================================
+
+  Model Innovation & Novelty (30%)
+    - Agentic resolution (acts, doesn't just answer).
+    - Hybrid knowledge layer: LightRAG docs + Neo4j customer graph reasoning.
+    - Adaptive emotional tone (not naive cheerfulness).
+    - The combination is the novelty — emphasize it in the README + demo.
+
+  Real-World Applicability (25%)
+    - Solves a universal pain (frustrated customers, repeated explaining).
+    - Mock-but-realistic biz ops; the architecture maps to a real deployment.
+    - The demo scenario is visibly a real support situation.
+
+  Technical Architecture (25%)
+    - Stateless backend, externalized state, modular tools, swappable stores.
+    - Clean agent state machine (LangGraph). Confirmation gates. Error fallbacks.
+    - Free-tier-aware design (2 LLM calls/turn) shows real engineering judgment.
+
+  Documentation Clarity (20%)
+    - Repo structure (Section 11), architecture diagram, runnable setup,
+      demo video + script, screenshots. PUBLIC repo, all links live.
+
+  Compliance: PUBLIC repo, complete details, working demo link. Set up the
+  deploy + README early so this is never the thing that sinks you.
+
+================================================================================
+  END OF PLAN
+================================================================================

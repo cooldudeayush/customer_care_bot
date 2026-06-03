@@ -1,0 +1,38 @@
+# Render Blueprint for the Customer Care Bot backend (FastAPI).
+# Render reads render.yaml from the connected repo ROOT, but `rootDir` below
+# scopes the build/start to the backend/ subfolder — so the app imports cleanly
+# as `main:app` (matching the in-package imports), no dotted path needed.
+#
+# Deploy: push this repo to GitHub, then in Render -> New -> Blueprint, select
+# the repo. Enter the secret env vars (GEMINI_API_KEY) in the dashboard.
+
+services:
+  - type: web
+    name: customer-care-bot-api
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # --- Secret: enter in the Render dashboard, never commit ---
+      - key: GEMINI_API_KEY
+        sync: false
+      # --- Non-secret config: safe defaults, override in dashboard if needed ---
+      - key: APP_ENV
+        value: production
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      # IMPORTANT: after the frontend is deployed on Vercel, set this to your
+      # Vercel URL so the browser is allowed to call this API. Comma-separated.
+      - key: CORS_ORIGINS
+        value: http://localhost:3000
+      # Neo4j (Phase 4) — leave blank until you wire the graph / cloud Aura.
+      - key: NEO4J_URI
+        sync: false
+      - key: NEO4J_USER
+        sync: false
+      - key: NEO4J_PASSWORD
+        sync: false

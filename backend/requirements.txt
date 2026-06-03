@@ -1,0 +1,12 @@
+# Customer Care Bot -- backend dependencies (Phase 0 skeleton)
+# Loosely pinned to a known-good range for Python 3.13.
+
+fastapi>=0.115,<0.140
+uvicorn[standard]>=0.30,<0.40
+# Current UNIFIED Google GenAI SDK (NOT the deprecated google-generativeai).
+# Import as: from google import genai
+google-genai>=1.0,<2
+pydantic>=2.7,<3
+pydantic-settings>=2.4,<3
+python-dotenv>=1.0,<2
+httpx>=0.27,<0.29
