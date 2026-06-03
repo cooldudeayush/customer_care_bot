@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from agent.loop import agent_loop
 from config import get_settings
+from knowledge.retriever import retriever
 from llm import LLMError, LLMNotConfigured, gemini_client
 from memory.store import store
 
@@ -48,6 +49,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.gemini_model,
         settings.gemini_configured,
     )
+
+    # Phase 2 grounding: load the policy retrieval index. If it's missing but a
+    # key is present, best-effort build it so a fresh deploy self-ingests. Never
+    # fatal — if grounding is unavailable, the bot just declines to guess.
+    if retriever.load():
+        logger.info("Retrieval index loaded (%d chunks).", retriever.size)
+    elif settings.gemini_configured:
+        try:
+            n = await retriever.build()
+            if n:
+                retriever.save()
+                logger.info("Built retrieval index at startup (%d chunks).", n)
+        except Exception:  # noqa: BLE001
+            logger.exception("Startup auto-ingest failed; continuing without grounding.")
+    else:
+        logger.warning(
+            "No retrieval index and no API key — grounding disabled until "
+            "`python -m knowledge.ingest` is run with a key set."
+        )
+
     yield
     logger.info("Shutting down %s", settings.app_name)
 
@@ -87,6 +108,7 @@ class HealthResponse(BaseModel):
     status: str
     app_env: str
     model: str
+    retrieval_chunks: int
 
 
 class LLMHealthResponse(BaseModel):
@@ -126,7 +148,12 @@ async def root() -> dict[str, str]:
 
 @app.get("/health", response_model=HealthResponse, tags=["health"])
 async def health() -> HealthResponse:
-    return HealthResponse(status="ok", app_env=settings.app_env, model=settings.gemini_model)
+    return HealthResponse(
+        status="ok",
+        app_env=settings.app_env,
+        model=settings.gemini_model,
+        retrieval_chunks=retriever.size,
+    )
 
 
 @app.get("/health/llm", response_model=LLMHealthResponse, tags=["health"])

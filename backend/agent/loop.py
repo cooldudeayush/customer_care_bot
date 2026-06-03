@@ -24,10 +24,11 @@ from __future__ import annotations
 import logging
 from typing import Any, AsyncIterator
 
+from knowledge.retriever import Retriever, retriever as default_retriever
 from llm import GeminiClient, LLMError, LLMNotConfigured, gemini_client
 from memory.store import ConversationStore, Message, store
 
-from .prompts import SYSTEM_PROMPT
+from .prompts import build_system_instruction
 
 logger = logging.getLogger("ccb.agent")
 
@@ -54,9 +55,11 @@ class AgentLoop:
         self,
         conversation_store: ConversationStore | None = None,
         llm: GeminiClient | None = None,
+        retriever: Retriever | None = None,
     ) -> None:
         self.store = conversation_store or store
         self.llm = llm or gemini_client
+        self.retriever = retriever or default_retriever
 
     async def stream(
         self, *, session_id: str, customer_id: str | None, message: str
@@ -74,20 +77,36 @@ class AgentLoop:
         else:
             title = await self.store.get_title(session_id) or "New chat"
 
-        # --- PERCEIVE / RETRIEVE / DECIDE / ACT --------------------------------
-        # (Phase 2-5) — no-ops in Phase 1. The RESPOND step below is grounded
-        # only in the conversation transcript for now.
+        # --- RETRIEVE: ground the answer in the policy corpus (Phase 2) -----
+        # (RETRIEVE also covers Neo4j graph traversal in Phase 4.)
+        try:
+            doc_chunks = await self.retriever.search(message)
+        except Exception:  # noqa: BLE001 - retrieval must never break a turn
+            logger.exception("Retrieval failed for session %s", session_id)
+            doc_chunks = []
 
-        # --- RESPOND: one streamed Gemini call ------------------------------
+        if doc_chunks:
+            # Surface which docs grounded the answer (demo eye-candy + trust).
+            yield {
+                "type": "sources",
+                "sources": [
+                    {"source": c.source, "heading": c.heading} for c in doc_chunks
+                ],
+            }
+
+        # --- PERCEIVE / DECIDE / ACT (Phase 3-5) — no-ops in Phase 2. -------
+
+        # --- RESPOND: one streamed Gemini call, grounded in retrieved docs --
         history = await self.store.get_messages(session_id)
         contents = _to_contents(history)
+        system_instruction = build_system_instruction(doc_chunks)
 
-        chunks: list[str] = []
+        reply_parts: list[str] = []
         try:
             async for token in self.llm.stream(
-                contents, system_instruction=SYSTEM_PROMPT
+                contents, system_instruction=system_instruction
             ):
-                chunks.append(token)
+                reply_parts.append(token)
                 yield {"type": "token", "content": token}
         except LLMNotConfigured:
             logger.info("Chat attempted without a configured GEMINI_API_KEY")
@@ -104,7 +123,7 @@ class AgentLoop:
             yield {"type": "error", "message": f"Sorry — I hit a problem: {exc}"}
             return
 
-        reply = "".join(chunks).strip()
+        reply = "".join(reply_parts).strip()
         if reply:
             await self.store.add_message(session_id, "bot", reply)
 

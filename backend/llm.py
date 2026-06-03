@@ -236,6 +236,50 @@ class GeminiClient:
             if callable(close):
                 await asyncio.to_thread(close)
 
+    async def embed_texts(
+        self,
+        texts: list[str],
+        *,
+        task_type: str = "RETRIEVAL_DOCUMENT",
+        batch_size: int = 32,
+    ) -> list[list[float]]:
+        """Embed a list of texts. Returns one raw vector per input (in order).
+
+        Batched (free-tier friendly) with the same 429 backoff as generation.
+        ``task_type`` should be 'RETRIEVAL_DOCUMENT' for corpus chunks and
+        'RETRIEVAL_QUERY' for the user's query (improves retrieval quality).
+        Vectors are returned un-normalized; the retriever normalizes for cosine.
+        """
+        if not texts:
+            return []
+        client = self._ensure_client()
+        out: list[list[float]] = []
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+
+            def _call(b: list[str] = batch):
+                return client.models.embed_content(
+                    model=self._settings.gemini_embed_model,
+                    contents=b,
+                    config=types.EmbedContentConfig(
+                        task_type=task_type,
+                        output_dimensionality=self._settings.embed_dim,
+                    ),
+                )
+
+            resp = await self._with_backoff(_call)
+            embeddings = getattr(resp, "embeddings", None)
+            if embeddings is None:  # some SDK paths return singular .embedding
+                single = getattr(resp, "embedding", None)
+                embeddings = [single] if single is not None else []
+            out.extend([list(e.values) for e in embeddings])
+        return out
+
+    async def embed_query(self, text: str) -> list[float]:
+        """Embed a single query string (RETRIEVAL_QUERY task type)."""
+        vecs = await self.embed_texts([text], task_type="RETRIEVAL_QUERY")
+        return vecs[0] if vecs else []
+
     async def ping(self) -> str:
         """Tiny liveness call used by GET /health/llm to verify key + SDK."""
         return await self.generate(

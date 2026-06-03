@@ -21,10 +21,16 @@ export interface DoneEvent {
   title: string;
 }
 
+export interface Source {
+  source: string;
+  heading: string;
+}
+
 export interface StreamHandlers {
   onToken: (text: string) => void;
   onDone: (e: DoneEvent) => void;
   onError: (message: string) => void;
+  onSources?: (sources: Source[]) => void;
 }
 
 export interface SessionSummary {
@@ -91,6 +97,7 @@ export async function streamChat(
       message?: string;
       session_id?: string;
       title?: string;
+      sources?: Source[];
     };
     try {
       data = JSON.parse(payload);
@@ -99,6 +106,8 @@ export async function streamChat(
     }
     if (data.type === "token" && data.content) {
       handlers.onToken(data.content);
+    } else if (data.type === "sources" && data.sources) {
+      handlers.onSources?.(data.sources);
     } else if (data.type === "done") {
       if (doneFired) return;
       doneFired = true;

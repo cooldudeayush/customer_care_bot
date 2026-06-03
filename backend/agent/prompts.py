@@ -35,3 +35,38 @@ Honesty and grounding (important):
 
 Keep replies natural and human. You're here to make a stressful moment easier.
 """
+
+
+# Phase 2 grounding rules (anti-hallucination). Applied on top of the persona.
+GROUNDING_INSTRUCTION = """\
+GROUNDING RULES (critical — this is how you stay trustworthy):
+- For any factual claim about ShopMate policy, prices, refund/return/shipping/
+  warranty windows, or eligibility, rely ONLY on the policy excerpts provided
+  below in this prompt (and, later, on tool results and customer data).
+- If the needed fact is NOT in the provided excerpts, do not guess or invent it.
+  Say you'll check, or offer to look it up / connect a specialist.
+- Never fabricate specific numbers, dates, amounts, or policy rules that aren't
+  in the excerpts.
+- You may still be warm, empathetic, and conversational — grounding applies to
+  factual claims, not to your tone.
+"""
+
+
+def build_system_instruction(doc_chunks: list) -> str:
+    """Compose the RESPOND system instruction: persona + grounding + retrieved
+    policy excerpts. ``doc_chunks`` are RetrievedChunk-like objects with
+    ``.source``, ``.heading``, and ``.text`` attributes.
+    """
+    parts = [SYSTEM_PROMPT, GROUNDING_INSTRUCTION]
+    if doc_chunks:
+        excerpts = "\n\n".join(
+            f"From {c.source}:\n{c.text}" for c in doc_chunks
+        )
+        parts.append("RELEVANT POLICY EXCERPTS (ground your answer in these):\n" + excerpts)
+    else:
+        parts.append(
+            "No policy excerpts matched this message. If the user asks about a "
+            "specific policy or number, say you'll need to check rather than guessing."
+        )
+    return "\n\n".join(parts)
+

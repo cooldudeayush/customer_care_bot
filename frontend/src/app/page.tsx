@@ -21,6 +21,7 @@ import {
   listSessions,
   streamChat,
   type SessionSummary,
+  type Source,
 } from "@/lib/api";
 
 const CUSTOMER_ID = "cust_demo";
@@ -31,6 +32,7 @@ interface Message {
   id: string;
   role: Role;
   text: string;
+  sources?: Source[];
 }
 
 const uuid = () =>
@@ -129,11 +131,16 @@ export default function ChatPage() {
       setMessages((prev) =>
         prev.map((m) => (m.id === botId ? { ...m, text: value } : m)),
       );
+    const setSources = (sources: Source[]) =>
+      setMessages((prev) =>
+        prev.map((m) => (m.id === botId ? { ...m, sources } : m)),
+      );
 
     await streamChat(
       { message: text, session_id: activeId, customer_id: CUSTOMER_ID },
       {
         onToken: appendToBot,
+        onSources: setSources,
         onDone: (e) => {
           // Reflect the (possibly new) session + title in the sidebar.
           setSessions((prev) => {
@@ -249,24 +256,34 @@ export default function ChatPage() {
                 </p>
               </div>
             )}
-            {messages.map((m) => (
-              <div
-                key={m.id}
-                className={`flex ${
-                  m.role === "user" ? "justify-end" : "justify-start"
-                }`}
-              >
+            {messages.map((m) => {
+              const usedSources = m.sources
+                ? Array.from(new Set(m.sources.map((s) => s.source)))
+                : [];
+              return (
                 <div
-                  className={`max-w-[80%] whitespace-pre-wrap rounded-2xl px-4 py-2 text-sm ${
-                    m.role === "user"
-                      ? "bg-blue-600 text-white"
-                      : "border border-slate-200 bg-white text-slate-800"
+                  key={m.id}
+                  className={`flex flex-col ${
+                    m.role === "user" ? "items-end" : "items-start"
                   }`}
                 >
-                  {m.text || (m.role === "bot" && sending ? "…" : "")}
+                  <div
+                    className={`max-w-[80%] whitespace-pre-wrap rounded-2xl px-4 py-2 text-sm ${
+                      m.role === "user"
+                        ? "bg-blue-600 text-white"
+                        : "border border-slate-200 bg-white text-slate-800"
+                    }`}
+                  >
+                    {m.text || (m.role === "bot" && sending ? "…" : "")}
+                  </div>
+                  {m.role === "bot" && usedSources.length > 0 && (
+                    <div className="mt-1 max-w-[80%] px-1 text-xs text-slate-400">
+                      📄 Grounded in: {usedSources.join(", ")}
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 

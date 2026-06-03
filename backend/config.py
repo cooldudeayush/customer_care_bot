@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     llm_max_retries: int = Field(default=4)
     llm_backoff_base_s: float = Field(default=1.0)
 
+    # ---- Embeddings (Phase 2 retrieval) ------------------------------------
+    # Current unified-SDK embedding model. 768 dims (truncated + normalized) keeps
+    # storage/compute lean for a small policy corpus; cosine sim needs normalized
+    # vectors anyway. Bump dims via env if you want more fidelity.
+    gemini_embed_model: str = Field(default="gemini-embedding-001")
+    embed_dim: int = Field(default=768)
+
     # ---- Relational / mock-business store (Phase 3) ------------------------
     # Local-first default: a file-based SQLite DB. Swap to Postgres/Supabase by
     # changing this URL only.
@@ -63,9 +70,14 @@ class Settings(BaseSettings):
     neo4j_user: str = Field(default="neo4j")
     neo4j_password: str = Field(default="")
 
-    # ---- Document retrieval (Phase 2: LightRAG / Chroma local) -------------
-    vector_store: str = Field(default="chroma", description="chroma | lightrag")
-    corpus_dir: str = Field(default="./data/corpus")
+    # ---- Document retrieval (Phase 2) --------------------------------------
+    # 'vector' = reliable local Gemini-embeddings + cosine store (default, no
+    # heavy deps). 'lightrag' is a documented swap-in behind the same Retriever
+    # interface if/when its heavier ingestion is worth it.
+    vector_store: str = Field(default="vector", description="vector | lightrag")
+    corpus_dir: str = Field(default="../data/corpus")
+    vector_index_path: str = Field(default="../data/vectorstore/index.json")
+    retrieval_top_k: int = Field(default=4)
 
     # ---- CORS --------------------------------------------------------------
     # Comma-separated list in the env, e.g.
