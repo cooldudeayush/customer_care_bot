@@ -63,6 +63,21 @@ class CustomerMemoryRecord:
     last_interaction: str | None
 
 
+@dataclass
+class HandoffRecord:
+    id: int
+    session_id: str | None
+    customer_id: str | None
+    customer_summary: str | None
+    issue: str | None
+    conversation_summary: str | None
+    actions_taken: list[str]
+    suggested_next_step: str | None
+    sentiment: str | None
+    status: str
+    created_at: str
+
+
 class ConversationStore:
     """CRUD over conversations + messages. All public methods are async."""
 
@@ -352,6 +367,83 @@ class ConversationStore:
                 ),
             )
             conn.commit()
+
+    # -- escalation / handoff packets (Phase 7) -----------------------------
+    async def create_handoff(
+        self,
+        session_id: str,
+        customer_id: str | None,
+        customer_summary: str,
+        issue: str,
+        conversation_summary: str,
+        actions_taken: list[str],
+        suggested_next_step: str,
+        sentiment: str,
+    ) -> int:
+        def _op() -> int:
+            with connect() as conn:
+                cur = conn.execute(
+                    "INSERT INTO handoff_packets "
+                    "(session_id, customer_id, customer_summary, issue, conversation_summary, "
+                    "actions_taken, suggested_next_step, sentiment, status, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,'open',?)",
+                    (
+                        session_id,
+                        customer_id,
+                        customer_summary,
+                        issue,
+                        conversation_summary,
+                        json.dumps(actions_taken or []),
+                        suggested_next_step,
+                        sentiment,
+                        _now(),
+                    ),
+                )
+                conn.commit()
+                return int(cur.lastrowid)
+
+        return await asyncio.to_thread(_op)
+
+    def _row_to_handoff(self, r) -> HandoffRecord:
+        return HandoffRecord(
+            id=r["id"],
+            session_id=r["session_id"],
+            customer_id=r["customer_id"],
+            customer_summary=r["customer_summary"],
+            issue=r["issue"],
+            conversation_summary=r["conversation_summary"],
+            actions_taken=_loads_list(r["actions_taken"]),
+            suggested_next_step=r["suggested_next_step"],
+            sentiment=r["sentiment"],
+            status=r["status"],
+            created_at=r["created_at"],
+        )
+
+    async def list_handoffs(self, status: str | None = None) -> list[HandoffRecord]:
+        def _op() -> list[HandoffRecord]:
+            with connect() as conn:
+                if status:
+                    rows = conn.execute(
+                        "SELECT * FROM handoff_packets WHERE status = ? ORDER BY id DESC",
+                        (status,),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT * FROM handoff_packets ORDER BY id DESC"
+                    ).fetchall()
+                return [self._row_to_handoff(r) for r in rows]
+
+        return await asyncio.to_thread(_op)
+
+    async def get_handoff(self, handoff_id: int) -> HandoffRecord | None:
+        def _op() -> HandoffRecord | None:
+            with connect() as conn:
+                row = conn.execute(
+                    "SELECT * FROM handoff_packets WHERE id = ?", (handoff_id,)
+                ).fetchone()
+                return self._row_to_handoff(row) if row else None
+
+        return await asyncio.to_thread(_op)
 
 
 # Process-wide store instance.

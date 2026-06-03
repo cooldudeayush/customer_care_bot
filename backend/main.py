@@ -172,6 +172,20 @@ class SessionDetailOut(BaseModel):
     messages: list[MessageOut]
 
 
+class HandoffOut(BaseModel):
+    id: int
+    session_id: str | None
+    customer_id: str | None
+    customer_summary: str | None
+    issue: str | None
+    conversation_summary: str | None
+    actions_taken: list[str]
+    suggested_next_step: str | None
+    sentiment: str | None
+    status: str
+    created_at: str
+
+
 # ---------------------------------------------------------------------------
 # Meta / health
 # ---------------------------------------------------------------------------
@@ -293,6 +307,23 @@ async def get_session(session_id: str) -> SessionDetailOut:
         title=title,
         messages=[MessageOut(role=m.role, content=m.content, created_at=m.created_at) for m in messages],
     )
+
+
+# ---------------------------------------------------------------------------
+# Handoffs (the mock specialist inbox — Phase 7)
+# ---------------------------------------------------------------------------
+@app.get("/handoffs", response_model=list[HandoffOut], tags=["handoffs"])
+async def list_handoffs(status: str | None = None) -> list[HandoffOut]:
+    """Pending human-handoff packets (most recent first) — the specialist inbox."""
+    return [HandoffOut(**vars(h)) for h in await store.list_handoffs(status)]
+
+
+@app.get("/handoffs/{handoff_id}", response_model=HandoffOut, tags=["handoffs"])
+async def get_handoff(handoff_id: int) -> HandoffOut:
+    h = await store.get_handoff(handoff_id)
+    if h is None:
+        raise HTTPException(status_code=404, detail="Handoff not found")
+    return HandoffOut(**vars(h))
 
 
 if __name__ == "__main__":

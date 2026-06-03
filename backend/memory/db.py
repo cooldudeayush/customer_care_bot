@@ -45,6 +45,21 @@ CREATE TABLE IF NOT EXISTS customer_memory (
     last_interaction TEXT
 );
 
+-- Human-handoff packets — the specialist "inbox" (Phase 7).
+CREATE TABLE IF NOT EXISTS handoff_packets (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id           TEXT,
+    customer_id          TEXT,
+    customer_summary     TEXT,
+    issue                TEXT,
+    conversation_summary TEXT,
+    actions_taken        TEXT,    -- JSON list
+    suggested_next_step  TEXT,
+    sentiment            TEXT,
+    status               TEXT NOT NULL DEFAULT 'open',  -- open | claimed | resolved
+    created_at           TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS messages (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id  TEXT NOT NULL,

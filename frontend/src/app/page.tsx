@@ -24,6 +24,7 @@ import {
   type Source,
   type ToolEvent,
   type EmotionEvent,
+  type HandoffEvent,
 } from "@/lib/api";
 
 const CUSTOMER_ID = "cust_demo";
@@ -63,6 +64,7 @@ interface Message {
   sources?: Source[];
   tools?: ToolActivity[];
   emotion?: EmotionEvent;
+  handoff?: HandoffEvent;
 }
 
 const uuid = () =>
@@ -198,6 +200,10 @@ export default function ChatPage() {
         onEmotion: (em) =>
           setMessages((prev) =>
             prev.map((m) => (m.id === botId ? { ...m, emotion: em } : m)),
+          ),
+        onHandoff: (h) =>
+          setMessages((prev) =>
+            prev.map((m) => (m.id === botId ? { ...m, handoff: h } : m)),
           ),
         onDone: (e) => {
           // Only update confirm state if this stream is for the active session
@@ -342,6 +348,30 @@ export default function ChatPage() {
                         {m.emotion.intensity >= 4 ? " (high)" : ""}
                       </div>
                     )}
+                  {m.role === "bot" && m.handoff && (
+                    <div className="mb-1 max-w-[80%] rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-900">
+                      <div className="font-semibold">
+                        🤝 Handed off to a specialist (ticket #{m.handoff.packet_id})
+                      </div>
+                      {m.handoff.issue && (
+                        <div className="mt-1">
+                          <span className="font-medium">Issue:</span> {m.handoff.issue}
+                        </div>
+                      )}
+                      {m.handoff.actions_taken.length > 0 && (
+                        <div className="mt-1">
+                          <span className="font-medium">Actions taken:</span>{" "}
+                          {m.handoff.actions_taken.join("; ")}
+                        </div>
+                      )}
+                      {m.handoff.suggested_next_step && (
+                        <div className="mt-1">
+                          <span className="font-medium">Next step:</span>{" "}
+                          {m.handoff.suggested_next_step}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {m.role === "bot" && m.tools && m.tools.length > 0 && (
                     <div className="mb-1 flex max-w-[80%] flex-wrap gap-1 px-1">
                       {m.tools.map((t, i) => (

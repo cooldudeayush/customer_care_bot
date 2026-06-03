@@ -28,7 +28,9 @@ from llm import GeminiClient, LLMError, LLMNotConfigured, gemini_client
 from memory.store import ConversationStore, Message, store
 from memory.summarize import summarize_session
 from tools import registry
+from tools.actions import customer_snapshot
 
+from .handoff import build_customer_summary, build_handoff_packet, fallback_packet
 from .perception import Emotion, Perception, ToolCall, parse_args, perceive
 from .prompts import build_respond_instruction, memory_block
 
@@ -211,21 +213,56 @@ class AgentLoop:
             yield {"type": "token", "content": text}
 
         elif effective == "ESCALATE":
-            # Phase 7 builds the full handoff packet; here we log a ticket + reply.
+            # Build a full handoff packet so the customer never re-explains.
+            snapshot = (
+                await asyncio.to_thread(customer_snapshot, customer_id)
+                if customer_id
+                else {"known": False}
+            )
+            reason = perception.reasoning or message
+            try:
+                packet = await build_handoff_packet(
+                    history=history,
+                    snapshot=snapshot,
+                    memory=memory_rec,
+                    emotion=perception.emotion,
+                    reason=reason,
+                    llm=self.llm,
+                )
+            except Exception:  # noqa: BLE001 - escalation must always work
+                logger.exception("Handoff packet generation failed; using fallback")
+                packet = fallback_packet(message, history)
+
+            customer_summary = build_customer_summary(snapshot, memory_rec)
+            packet_id = await self.store.create_handoff(
+                session_id,
+                customer_id,
+                customer_summary,
+                packet.issue,
+                packet.conversation_summary,
+                packet.actions_taken,
+                packet.suggested_next_step,
+                packet.sentiment,
+            )
+            # Also drop a high-priority ticket (a second route for the human team).
             await asyncio.to_thread(
                 registry.execute,
                 "create_ticket",
                 {
                     "customer_id": customer_id or "unknown",
-                    "subject": "Escalation to a specialist",
-                    "body": perception.reasoning or message,
+                    "subject": f"Escalation: {packet.issue}"[:90],
+                    "body": packet.conversation_summary,
                     "priority": "high",
                 },
             )
-            text = (
-                "I'm connecting you with a specialist who can take this further. "
-                "I've shared the full context, so you won't need to repeat anything."
-            )
+            yield {
+                "type": "handoff",
+                "packet_id": packet_id,
+                "issue": packet.issue,
+                "actions_taken": packet.actions_taken,
+                "suggested_next_step": packet.suggested_next_step,
+            }
+            text = packet.customer_message
             reply_parts.append(text)
             yield {"type": "token", "content": text}
 

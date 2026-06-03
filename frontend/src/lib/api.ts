@@ -38,6 +38,13 @@ export interface EmotionEvent {
   intensity: number;
 }
 
+export interface HandoffEvent {
+  packet_id: number;
+  issue: string;
+  actions_taken: string[];
+  suggested_next_step: string;
+}
+
 export interface StreamHandlers {
   onToken: (text: string) => void;
   onDone: (e: DoneEvent) => void;
@@ -45,6 +52,7 @@ export interface StreamHandlers {
   onSources?: (sources: Source[]) => void;
   onTool?: (t: ToolEvent) => void;
   onEmotion?: (e: EmotionEvent) => void;
+  onHandoff?: (h: HandoffEvent) => void;
 }
 
 export interface SessionSummary {
@@ -118,6 +126,10 @@ export async function streamChat(
       awaiting_confirmation?: boolean;
       state?: string;
       intensity?: number;
+      packet_id?: number;
+      issue?: string;
+      actions_taken?: string[];
+      suggested_next_step?: string;
     };
     try {
       data = JSON.parse(payload);
@@ -132,6 +144,13 @@ export async function streamChat(
       handlers.onTool?.({ name: data.name, status: data.status, success: data.success });
     } else if (data.type === "emotion" && data.state) {
       handlers.onEmotion?.({ state: data.state, intensity: data.intensity ?? 1 });
+    } else if (data.type === "handoff" && data.packet_id != null) {
+      handlers.onHandoff?.({
+        packet_id: data.packet_id,
+        issue: data.issue ?? "",
+        actions_taken: data.actions_taken ?? [],
+        suggested_next_step: data.suggested_next_step ?? "",
+      });
     } else if (data.type === "done") {
       if (doneFired) return;
       doneFired = true;
