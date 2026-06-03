@@ -126,7 +126,7 @@ class VectorRetriever:
 
         Raises LLMNotConfigured if there is no API key (caller decides what to do).
         """
-        chunks = load_corpus_chunks(self._settings.corpus_dir)
+        chunks = load_corpus_chunks(self._settings.corpus_path)
         if not chunks:
             logger.warning("No corpus chunks to index.")
             self._meta, self._matrix = [], None
@@ -146,7 +146,7 @@ class VectorRetriever:
     def save(self) -> None:
         if self._matrix is None:
             return
-        path = self._settings.vector_index_path
+        path = self._settings.index_path
         os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
         payload = {
             "model": self._settings.gemini_embed_model,
@@ -162,14 +162,20 @@ class VectorRetriever:
 
     def load(self) -> bool:
         """Load a persisted index if present. Returns True on success."""
-        path = self._settings.vector_index_path
+        path = self._settings.index_path
         if not os.path.isfile(path):
             return False
         try:
             with open(path, "r", encoding="utf-8") as f:
                 payload = json.load(f)
-            items = payload.get("items", [])
+            required = ("text", "source", "heading", "vector")
+            items = [
+                it
+                for it in payload.get("items", [])
+                if isinstance(it, dict) and all(k in it for k in required)
+            ]
             if not items:
+                logger.warning("Retrieval index has no usable items: %s", path)
                 return False
             self._meta = [
                 {"text": it["text"], "source": it["source"], "heading": it["heading"]}
@@ -197,9 +203,13 @@ class VectorRetriever:
             return []
         q = np.array(qvec, dtype=np.float32)
         qn = np.linalg.norm(q)
-        if qn == 0:
+        # Guard against a zero or non-finite (NaN/inf) query vector — np.nan == 0
+        # is False, so a bare `qn == 0` check would let NaN through and poison sims.
+        if not np.isfinite(qn) or qn == 0:
             return []
         q = q / qn
+        if not np.all(np.isfinite(q)):
+            return []
         sims = self._matrix @ q
         top = np.argsort(-sims)[: max(1, k)]
         return [

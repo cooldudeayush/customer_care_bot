@@ -69,18 +69,25 @@ class AgentLoop:
         await self.store.ensure_session(session_id, customer_id)
         await self.store.add_message(session_id, "user", message)
 
+        # Load the full transcript once (includes the just-added user message);
+        # reused for titling, the retrieval query, and the RESPOND contents.
+        history = await self.store.get_messages(session_id)
+        user_msgs = [m.content for m in history if m.role == "user"]
+
         # Title the chat from its first user message (drives the sidebar label).
-        is_first_turn = (await self.store.count_user_messages(session_id)) == 1
-        if is_first_turn:
+        if len(user_msgs) == 1:
             title = _autotitle(message)
             await self.store.set_title(session_id, title)
         else:
             title = await self.store.get_title(session_id) or "New chat"
 
         # --- RETRIEVE: ground the answer in the policy corpus (Phase 2) -----
+        # Retrieve on the last couple of user turns so context-dependent
+        # follow-ups ("what about electronics?") still hit the right section.
         # (RETRIEVE also covers Neo4j graph traversal in Phase 4.)
+        retrieval_query = " ".join(user_msgs[-2:]) if user_msgs else message
         try:
-            doc_chunks = await self.retriever.search(message)
+            doc_chunks = await self.retriever.search(retrieval_query)
         except Exception:  # noqa: BLE001 - retrieval must never break a turn
             logger.exception("Retrieval failed for session %s", session_id)
             doc_chunks = []
@@ -97,7 +104,6 @@ class AgentLoop:
         # --- PERCEIVE / DECIDE / ACT (Phase 3-5) — no-ops in Phase 2. -------
 
         # --- RESPOND: one streamed Gemini call, grounded in retrieved docs --
-        history = await self.store.get_messages(session_id)
         contents = _to_contents(history)
         system_instruction = build_system_instruction(doc_chunks)
 

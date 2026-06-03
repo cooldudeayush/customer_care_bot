@@ -10,11 +10,22 @@ memory DB) are present now so feature code can plug in without touching wiring.
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from typing import Annotated
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+# Anchor for resolving relative data paths. Computed from this file's location so
+# paths work regardless of the process's current working directory (a subprocess,
+# IDE, or deploy launcher could start us from anywhere).
+_BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _anchor(path: str) -> str:
+    """Resolve a possibly-relative path against the backend/ directory."""
+    return path if os.path.isabs(path) else os.path.normpath(os.path.join(_BACKEND_DIR, path))
 
 
 class Settings(BaseSettings):
@@ -108,6 +119,16 @@ class Settings(BaseSettings):
         """True when a non-placeholder API key is present."""
         key = self.gemini_api_key.strip()
         return bool(key) and not key.lower().startswith("your-")
+
+    @property
+    def corpus_path(self) -> str:
+        """Absolute corpus dir (cwd-independent)."""
+        return _anchor(self.corpus_dir)
+
+    @property
+    def index_path(self) -> str:
+        """Absolute vector-index path (cwd-independent)."""
+        return _anchor(self.vector_index_path)
 
 
 @lru_cache

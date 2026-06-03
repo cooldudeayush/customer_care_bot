@@ -19,7 +19,7 @@ import sqlite3
 from contextlib import contextmanager
 from typing import Iterator
 
-from config import get_settings
+from config import _anchor, get_settings
 
 
 def _resolve_path(database_url: str) -> str:
@@ -31,7 +31,8 @@ def _resolve_path(database_url: str) -> str:
     return database_url
 
 
-DB_PATH = _resolve_path(get_settings().database_url)
+# Anchor to backend/ so the DB lives in a stable place regardless of cwd.
+DB_PATH = _anchor(_resolve_path(get_settings().database_url))
 
 
 SCHEMA = """
