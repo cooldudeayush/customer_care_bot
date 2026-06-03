@@ -297,9 +297,15 @@ class AgentLoop:
 
             # MIXED (multi-intent): the safe parts ran above; stage the
             # confirm-required parts for the next turn and have RESPOND propose them.
+            # If a safe action FAILED, don't stage the money action — report the
+            # failure and let the customer retry; nothing is left pending.
             pending_proposal = ""
-            if effective == "MIXED" and pending_tools:
-                proposal = perception.confirm_message or _synthesize_confirm(pending_tools)
+            safe_ok = all(r["result"].get("success") for r in tool_results) if tool_results else True
+            if effective == "MIXED" and pending_tools and safe_ok:
+                # Use the synthesized text (accurate to what's ACTUALLY still
+                # pending — the safe parts already ran), not the model's whole-
+                # compound confirm_message.
+                proposal = _synthesize_confirm(pending_tools)
                 await self.store.set_pending_action(
                     session_id,
                     {"tools": [t.model_dump() for t in pending_tools], "summary": proposal},
@@ -334,6 +340,12 @@ class AgentLoop:
                 logger.exception("LLM error during RESPOND for session %s", session_id)
                 yield {"type": "error", "message": f"Sorry — I hit a problem: {exc}"}
                 errored = True
+
+            # If the combined reply failed after we staged a MIXED confirmation,
+            # the proposal never reached the customer — don't leave it pending.
+            if errored and awaiting_confirmation:
+                await self.store.clear_pending_action(session_id)
+                awaiting_confirmation = False
 
         if errored:
             return

@@ -113,6 +113,23 @@ async def main():
     assert await store.get_pending_action("m1") is None, "pending should be cleared"
     print("2 confirm 'yes' executes the gated refund: ok")
 
+    # 3) MIXED where the SAFE action FAILS -> the money action is NOT staged.
+    PLAN["reschedule 1190 and refund 1255"] = Perception(
+        emotion=Emotion(),
+        intents=["reschedule", "refund"],
+        action_type="ACT",
+        tools=[
+            # 1190 is delivered, so reschedule_delivery fails (a safe-action failure).
+            ToolCall(name="reschedule_delivery", args_json='{"order_id":"1190","new_date":"next week"}'),
+            ToolCall(name="issue_refund", args_json='{"order_id":"1255","amount":299}'),
+        ],
+    )
+    ev3 = await run_turn("m2", "reschedule 1190 and refund 1255")
+    done3 = next(e for e in ev3 if e["type"] == "done")
+    assert done3["awaiting_confirmation"] is False, "must not await when the safe action failed"
+    assert await store.get_pending_action("m2") is None, "money action must not be staged after a safe failure"
+    print("3 MIXED with a failed safe action -> money action not staged: ok")
+
     print("\n=== ALL PHASE 8 MULTI-INTENT TESTS PASS ===")
 
 
