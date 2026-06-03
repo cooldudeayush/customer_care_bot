@@ -284,8 +284,10 @@ def issue_refund(order_id: str, amount: float | None = None, reason: str | None 
             or (dup is not None and amount is not None and abs(amount - dup) < 0.01)
         )
 
+        mark_dup: float | None = None
         if is_duplicate and dup is not None:
             refund_amount = dup
+            mark_dup = dup  # also flip one captured charge in the graph mirror
             # Mark ONE of the duplicate captured charges as refunded; order stands.
             dupe_row = next((p for p in payments if abs(p["amount"] - dup) < 0.01), None)
             if dupe_row is not None:
@@ -312,7 +314,10 @@ def issue_refund(order_id: str, amount: float | None = None, reason: str | None 
         )
         conn.commit()
         # Mirror to the customer graph (best-effort; SQLite is the source of truth).
-        graph_client.record_refund(order_id, new_status, refund_amount, ref["method"], ref["last4"])
+        graph_client.record_refund(
+            order_id, new_status, refund_amount, ref["method"], ref["last4"],
+            mark_duplicate_amount=mark_dup,
+        )
         return _ok(
             {
                 "order_id": order_id,

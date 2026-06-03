@@ -17,6 +17,7 @@ Docker locally or Neo4j Aura in the cloud — only NEO4J_URI changes.
 from __future__ import annotations
 
 import logging
+import threading
 
 from config import Settings, get_settings
 
@@ -71,13 +72,28 @@ class GraphClient:
         driver = self._build_driver()
         if driver is None:
             return False
-        try:
-            driver.verify_connectivity()
-            self._enabled = True
-        except Exception:  # noqa: BLE001
+
+        # Bound the connectivity check: verify_connectivity() can otherwise hang
+        # on a network partition (the OS TCP timeout is ~2 min), which would block
+        # FastAPI startup. Run it on a daemon thread and give up after a few seconds.
+        result = {"ok": False}
+
+        def _check() -> None:
+            try:
+                driver.verify_connectivity()
+                result["ok"] = True
+            except Exception:  # noqa: BLE001
+                result["ok"] = False
+
+        t = threading.Thread(target=_check, daemon=True)
+        t.start()
+        t.join(timeout=6)
+        if t.is_alive() or not result["ok"]:
             logger.info("Neo4j not reachable; running in SQLite-only (degraded) mode.")
             self._enabled = False
-        return self._enabled
+            return False
+        self._enabled = True
+        return True
 
     @property
     def enabled(self) -> bool:
@@ -144,7 +160,10 @@ class GraphClient:
             logger.info("Neo4j graph synced: %d orders.", len(orders))
             return len(orders)
         except Exception:  # noqa: BLE001
-            logger.warning("Graph sync failed; continuing in degraded mode.", exc_info=True)
+            # A partial/failed sync means the graph can't be trusted — disable it
+            # so every read falls back to SQLite (the source of truth).
+            self._enabled = False
+            logger.warning("Graph sync failed; disabling graph (SQLite-only).", exc_info=True)
             return None
 
     @staticmethod
@@ -217,7 +236,10 @@ class GraphClient:
             "p.category AS category, pol.window_days AS window_days LIMIT 1",
             oid=order_id,
         )
-        if not recs or recs[0]["status"] is None:
+        # Require a complete traversal: if the order has no item/product/policy
+        # (partial data), category is None — fall back to SQLite rather than
+        # answering with a wrong default window.
+        if not recs or recs[0]["status"] is None or recs[0]["category"] is None:
             return None
         rec = recs[0]
         pays = self._run(
@@ -242,14 +264,34 @@ class GraphClient:
         )
 
     def record_refund(
-        self, order_id: str, new_status: str, amount: float, method: str = "card", last4: str | None = None
+        self,
+        order_id: str,
+        new_status: str,
+        amount: float,
+        method: str = "card",
+        last4: str | None = None,
+        mark_duplicate_amount: float | None = None,
     ) -> bool:
-        return self._write(
-            "MATCH (o:Order {id:$oid}) SET o.status=$st "
-            "CREATE (o)-[:REFUNDED_BY]->(:Payment {amount:$amt, method:$method, "
-            "last4:$last4, status:'refunded', is_refund:true})",
-            oid=order_id, st=new_status, amt=amount, method=method, last4=last4,
+        ok = True
+        if mark_duplicate_amount is not None:
+            # Mirror SQLite for a duplicate refund: flip ONE matching captured
+            # charge to 'refunded' so the graph stops seeing it as a duplicate.
+            ok = self._write(
+                "MATCH (o:Order {id:$oid})-[:PAID_WITH]->"
+                "(p:Payment {amount:$amt, status:'captured', is_refund:false}) "
+                "WITH p LIMIT 1 SET p.status='refunded'",
+                oid=order_id, amt=mark_duplicate_amount,
+            )
+        ok = (
+            self._write(
+                "MATCH (o:Order {id:$oid}) SET o.status=$st "
+                "CREATE (o)-[:REFUNDED_BY]->(:Payment {amount:$amt, method:$method, "
+                "last4:$last4, status:'refunded', is_refund:true})",
+                oid=order_id, st=new_status, amt=amount, method=method, last4=last4,
+            )
+            and ok
         )
+        return ok
 
 
 # Process-wide graph client.
