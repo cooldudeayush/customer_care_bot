@@ -33,12 +33,18 @@ export interface ToolEvent {
   success?: boolean;
 }
 
+export interface EmotionEvent {
+  state: string;
+  intensity: number;
+}
+
 export interface StreamHandlers {
   onToken: (text: string) => void;
   onDone: (e: DoneEvent) => void;
   onError: (message: string) => void;
   onSources?: (sources: Source[]) => void;
   onTool?: (t: ToolEvent) => void;
+  onEmotion?: (e: EmotionEvent) => void;
 }
 
 export interface SessionSummary {
@@ -110,6 +116,8 @@ export async function streamChat(
       status?: "running" | "done";
       success?: boolean;
       awaiting_confirmation?: boolean;
+      state?: string;
+      intensity?: number;
     };
     try {
       data = JSON.parse(payload);
@@ -122,6 +130,8 @@ export async function streamChat(
       handlers.onSources?.(data.sources);
     } else if (data.type === "tool" && data.name && data.status) {
       handlers.onTool?.({ name: data.name, status: data.status, success: data.success });
+    } else if (data.type === "emotion" && data.state) {
+      handlers.onEmotion?.({ state: data.state, intensity: data.intensity ?? 1 });
     } else if (data.type === "done") {
       if (doneFired) return;
       doneFired = true;

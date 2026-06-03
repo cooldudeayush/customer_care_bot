@@ -23,9 +23,18 @@ import {
   type SessionSummary,
   type Source,
   type ToolEvent,
+  type EmotionEvent,
 } from "@/lib/api";
 
 const CUSTOMER_ID = "cust_demo";
+
+// Emoji + styling for the detected-emotion badge (neutral is hidden).
+const EMOTION_BADGE: Record<string, { emoji: string; cls: string }> = {
+  angry: { emoji: "😠", cls: "border-red-300 bg-red-50 text-red-700" },
+  frustrated: { emoji: "😟", cls: "border-orange-300 bg-orange-50 text-orange-700" },
+  confused: { emoji: "😕", cls: "border-amber-300 bg-amber-50 text-amber-700" },
+  happy: { emoji: "😊", cls: "border-green-300 bg-green-50 text-green-700" },
+};
 
 // Friendly labels for the tool-activity chips.
 const TOOL_LABELS: Record<string, string> = {
@@ -53,6 +62,7 @@ interface Message {
   text: string;
   sources?: Source[];
   tools?: ToolActivity[];
+  emotion?: EmotionEvent;
 }
 
 const uuid = () =>
@@ -185,6 +195,10 @@ export default function ChatPage() {
         onToken: appendToBot,
         onSources: setSources,
         onTool: addTool,
+        onEmotion: (em) =>
+          setMessages((prev) =>
+            prev.map((m) => (m.id === botId ? { ...m, emotion: em } : m)),
+          ),
         onDone: (e) => {
           // Only update confirm state if this stream is for the active session
           // (guards against a late stream landing after a session switch).
@@ -316,6 +330,18 @@ export default function ChatPage() {
                     m.role === "user" ? "items-end" : "items-start"
                   }`}
                 >
+                  {m.role === "bot" &&
+                    m.emotion &&
+                    m.emotion.state !== "neutral" &&
+                    EMOTION_BADGE[m.emotion.state] && (
+                      <div
+                        className={`mb-1 inline-flex max-w-[80%] items-center self-start rounded-full border px-2 py-0.5 text-xs ${EMOTION_BADGE[m.emotion.state].cls}`}
+                      >
+                        {EMOTION_BADGE[m.emotion.state].emoji} sensed:{" "}
+                        {m.emotion.state}
+                        {m.emotion.intensity >= 4 ? " (high)" : ""}
+                      </div>
+                    )}
                   {m.role === "bot" && m.tools && m.tools.length > 0 && (
                     <div className="mb-1 flex max-w-[80%] flex-wrap gap-1 px-1">
                       {m.tools.map((t, i) => (

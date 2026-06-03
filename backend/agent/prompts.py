@@ -81,11 +81,9 @@ def build_respond_instruction(
             + "\n".join(lines)
         )
     if emotion is not None:
-        parts.append(
-            f"The customer currently seems {emotion.state} (intensity "
-            f"{emotion.intensity}/5). Lead with empathy if they're upset; match a "
-            "positive mood briefly; slow down and simplify if they're confused."
-        )
+        from emotion.tone import tone_directive
+
+        parts.append(tone_directive(emotion))
     return "\n\n".join(parts)
 
 

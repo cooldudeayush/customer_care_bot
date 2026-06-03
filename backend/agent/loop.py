@@ -119,6 +119,13 @@ class AgentLoop:
             logger.exception("PERCEIVE failed; falling back to ANSWER")
             perception = Perception(emotion=Emotion(), intents=[], action_type="ANSWER", tools=[])
 
+        # Surface the detected emotion (the adaptive-tone read drives RESPOND).
+        yield {
+            "type": "emotion",
+            "state": perception.emotion.state,
+            "intensity": perception.emotion.intensity,
+        }
+
         # --- DECIDE: resolve a pending confirmation, then route -------------
         tools_to_run: list[ToolCall] = []
         effective: str | None = None
