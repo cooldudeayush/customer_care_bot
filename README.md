@@ -27,7 +27,6 @@
 |---|---|
 | 🌐 **App (frontend)** | **<https://customer-care-bot-ten.vercel.app>** |
 | ⚙️ **API (backend)** | <https://customer-care-bot-api.onrender.com> · [health](https://customer-care-bot-api.onrender.com/health) · [API docs](https://customer-care-bot-api.onrender.com/docs) |
-| 🎥 **Demo video** | _add your video link here_ |
 
 > ℹ️ The backend is on Render's free tier — it sleeps after ~15 min idle, so the **first request may take ~50s to wake up**. Just send it again if the first message is slow.
 
