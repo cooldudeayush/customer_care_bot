@@ -96,12 +96,17 @@ class AgentLoop:
 
     # -- main ---------------------------------------------------------------
     async def stream(
-        self, *, session_id: str, customer_id: str | None, message: str
+        self,
+        *,
+        session_id: str,
+        customer_id: str | None,
+        message: str,
+        owner: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         t_start = time.monotonic()
         tools_trace: list[dict] = []   # [{name, success}] for the turn trace
         sources_trace: list[str] = []  # grounding doc filenames for the trace
-        await self.store.ensure_session(session_id, customer_id)
+        await self.store.ensure_session(session_id, customer_id, owner)
         await self.store.add_message(session_id, "user", message)
 
         history = await self.store.get_messages(session_id)

@@ -141,6 +141,9 @@ class ChatRequest(BaseModel):
     customer_id: str | None = Field(
         default=None, description="Known customer id, if available."
     )
+    owner: str | None = Field(
+        default=None, description="Per-browser token that scopes the chat sidebar."
+    )
 
 
 class HealthResponse(BaseModel):
@@ -282,6 +285,7 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             session_id=session_id,
             customer_id=request.customer_id,
             message=request.message,
+            owner=request.owner,
         )
         try:
             async for event in agen:
@@ -311,9 +315,12 @@ async def chat(request: ChatRequest) -> StreamingResponse:
 # Sessions (sidebar)
 # ---------------------------------------------------------------------------
 @app.get("/sessions", response_model=list[SessionSummaryOut], tags=["sessions"])
-async def list_sessions(customer_id: str | None = None) -> list[SessionSummaryOut]:
-    """List chat sessions (most recently updated first) for the sidebar."""
-    sessions = await store.list_sessions(customer_id)
+async def list_sessions(
+    customer_id: str | None = None, owner: str | None = None
+) -> list[SessionSummaryOut]:
+    """List chat sessions (most recently updated first) for the sidebar.
+    Scoped by ``owner`` (per-browser privacy) when provided."""
+    sessions = await store.list_sessions(customer_id=customer_id, owner=owner)
     return [SessionSummaryOut(**vars(s)) for s in sessions]
 
 

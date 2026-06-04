@@ -105,9 +105,10 @@ class ConversationStore:
 
     # -- sessions -----------------------------------------------------------
     async def ensure_session(
-        self, session_id: str, customer_id: str | None
+        self, session_id: str, customer_id: str | None, owner: str | None = None
     ) -> None:
-        """Insert the conversation row if it doesn't exist yet (idempotent)."""
+        """Insert the conversation row if it doesn't exist yet (idempotent).
+        ``owner`` is the per-browser token used to scope the sidebar (privacy)."""
 
         def _op() -> None:
             with connect() as conn:
@@ -119,9 +120,9 @@ class ConversationStore:
                     now = _now()
                     conn.execute(
                         "INSERT INTO conversations "
-                        "(session_id, customer_id, title, started_at, updated_at) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        (session_id, customer_id, "New chat", now, now),
+                        "(session_id, customer_id, owner, title, started_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (session_id, customer_id, owner, "New chat", now, now),
                     )
                     conn.commit()
 
@@ -150,27 +151,30 @@ class ConversationStore:
 
         return await asyncio.to_thread(_op)
 
-    async def list_sessions(self, customer_id: str | None) -> list[SessionSummary]:
-        """Most-recently-updated first — drives the sidebar order."""
+    async def list_sessions(
+        self, customer_id: str | None = None, owner: str | None = None
+    ) -> list[SessionSummary]:
+        """Most-recently-updated first — drives the sidebar order. Filters by
+        ``owner`` (per-browser privacy) when given, else by ``customer_id``."""
+
+        select = (
+            "SELECT c.*, (SELECT COUNT(*) FROM messages m "
+            "WHERE m.session_id = c.session_id) AS message_count FROM conversations c "
+        )
 
         def _op() -> list[SessionSummary]:
             with connect() as conn:
-                if customer_id is None:
+                if owner is not None:
                     rows = conn.execute(
-                        "SELECT c.*, "
-                        "(SELECT COUNT(*) FROM messages m "
-                        " WHERE m.session_id = c.session_id) AS message_count "
-                        "FROM conversations c ORDER BY c.updated_at DESC"
+                        select + "WHERE c.owner = ? ORDER BY c.updated_at DESC", (owner,)
                     ).fetchall()
-                else:
+                elif customer_id is not None:
                     rows = conn.execute(
-                        "SELECT c.*, "
-                        "(SELECT COUNT(*) FROM messages m "
-                        " WHERE m.session_id = c.session_id) AS message_count "
-                        "FROM conversations c WHERE c.customer_id = ? "
-                        "ORDER BY c.updated_at DESC",
+                        select + "WHERE c.customer_id = ? ORDER BY c.updated_at DESC",
                         (customer_id,),
                     ).fetchall()
+                else:
+                    rows = conn.execute(select + "ORDER BY c.updated_at DESC").fetchall()
                 return [
                     SessionSummary(
                         session_id=r["session_id"],

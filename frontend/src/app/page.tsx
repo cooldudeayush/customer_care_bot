@@ -92,7 +92,20 @@ const uuid = () =>
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
 
+// A stable per-browser token so each visitor sees ONLY their own chats (privacy).
+// The bot still acts on the shared demo customer (CUSTOMER_ID) for the orders/data.
+function getOwner(): string {
+  if (typeof window === "undefined") return "anon";
+  let o = window.localStorage.getItem("ccb_owner");
+  if (!o) {
+    o = uuid();
+    window.localStorage.setItem("ccb_owner", o);
+  }
+  return o;
+}
+
 export default function ChatPage() {
+  const [owner] = useState<string>(() => getOwner());
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [activeId, setActiveId] = useState<string>(() => uuid());
   const [messages, setMessages] = useState<Message[]>([]);
@@ -105,8 +118,8 @@ export default function ChatPage() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const refreshSessions = useCallback(async () => {
-    setSessions(await listSessions(CUSTOMER_ID));
-  }, []);
+    setSessions(await listSessions(owner));
+  }, [owner]);
 
   const refreshCustomerInfo = useCallback(async () => {
     setCustomerInfo(await getCustomerInfo(CUSTOMER_ID));
@@ -218,7 +231,7 @@ export default function ChatPage() {
       );
 
     await streamChat(
-      { message: text, session_id: activeId, customer_id: CUSTOMER_ID },
+      { message: text, session_id: activeId, customer_id: CUSTOMER_ID, owner },
       {
         onToken: appendToBot,
         onSources: setSources,

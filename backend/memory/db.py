@@ -29,6 +29,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversations (
     session_id  TEXT PRIMARY KEY,
     customer_id TEXT,
+    owner       TEXT,                          -- per-browser chat owner (privacy)
     title       TEXT NOT NULL DEFAULT 'New chat',
     started_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
@@ -127,10 +128,12 @@ def init_db() -> None:
         conn.execute("PRAGMA journal_mode=WAL;")  # persistent; set once
         conn.executescript(SCHEMA)
         # Best-effort migration for DBs created before Phase 6 added the column.
-        try:
-            conn.execute(
-                "ALTER TABLE conversations ADD COLUMN summarized INTEGER NOT NULL DEFAULT 0"
-            )
-        except sqlite3.OperationalError:
-            pass  # column already exists
+        for stmt in (
+            "ALTER TABLE conversations ADD COLUMN summarized INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE conversations ADD COLUMN owner TEXT",
+        ):
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass  # column already exists
         conn.commit()

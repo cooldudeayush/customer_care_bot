@@ -13,6 +13,7 @@ export interface ChatStreamRequest {
   message: string;
   session_id: string;
   customer_id: string;
+  owner: string;
 }
 
 export interface DoneEvent {
@@ -182,11 +183,11 @@ export async function streamChat(
   if (buffer.trim()) handleFrame(buffer);
 }
 
-/** List a customer's chat sessions for the sidebar (most recent first). */
-export async function listSessions(customerId: string): Promise<SessionSummary[]> {
+/** List this browser's chat sessions for the sidebar (most recent first). */
+export async function listSessions(owner: string): Promise<SessionSummary[]> {
   try {
     const res = await fetch(
-      `${API_URL}/sessions?customer_id=${encodeURIComponent(customerId)}`,
+      `${API_URL}/sessions?owner=${encodeURIComponent(owner)}`,
       { cache: "no-store" },
     );
     if (!res.ok) return [];
