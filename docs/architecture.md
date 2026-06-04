@@ -33,8 +33,8 @@ flowchart TB
     API --> DEC["Decision engine"]
     API --> TOOL["Tools / actions"]
     API --> MEML["Memory layer"]
-    EMO --> GEM["Gemini Flash"]
-    KN --> RAG["Vector retrieval (corpus)"]
+    EMO --> GEM["LLM layer — Gemini Flash + Claude Haiku<br/>configurable primary + auto-fallback"]
+    KN --> RAG["Vector retrieval (corpus) — Gemini embeddings"]
     KN --> NEO[("Neo4j customer graph")]
     DEC --> GEM
     TOOL --> BIZ[("Mock business DB — SQLite")]
@@ -55,15 +55,19 @@ implemented as a custom async function ([`backend/agent/loop.py`](../backend/age
 
 | Stage | LLM calls | What happens |
 |---|---|---|
-| **PERCEIVE** | 1 (structured) | One Gemini call returns `{emotion, intents, entities, tool plan}` together — the free-tier discipline (instead of 5 separate calls) |
+| **PERCEIVE** | 1 (structured) | One structured LLM call returns `{emotion, intents, entities, tool plan}` together — the ~2-calls-per-turn discipline (instead of 5 separate calls) |
 | **RETRIEVE** | 0 | Pull policy chunks (vector) + customer/graph data + long-term memory |
 | **DECIDE** | 0 | Route: `ANSWER · ACT · CLARIFY · CONFIRM · ESCALATE`; enforce the confirm gate; split multi-intent into safe vs. gated |
 | **ACT** | 0 | Execute safe tools now; stage money/irreversible tools behind CONFIRM; write back to the graph |
 | **RESPOND** | 1 (streamed) | Generate the reply, grounded in retrieved facts + tool results, with the tone + language directives |
 | **REMEMBER** | 1 at session end | Summarize the session into long-term memory |
 
-**Net: ~2 LLM calls per turn** → stays under Gemini's ~15 req/min free tier. Backoff
-on 429s; embeddings cached; the corpus is embedded once and persisted.
+**Net: ~2 LLM calls per turn**, served by a dual-provider LLM layer (`backend/llm.py`):
+a configurable primary (`LLM_PRIMARY` = `gemini` free-first or `claude` fast-first)
+with the other provider as an automatic fallback, so a quota/outage never dead-ends.
+Gemini-primary stays under the ~15 req/min free tier with backoff on 429s; Claude-primary
+(Haiku) trades a small per-token cost for low latency. Embeddings always use Gemini
+(Anthropic has none); the corpus is embedded once and persisted.
 
 ---
 

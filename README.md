@@ -9,6 +9,7 @@
 [![Backend](https://img.shields.io/badge/Backend-FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Frontend](https://img.shields.io/badge/Frontend-Next.js%2016-black?logo=next.js)](https://nextjs.org/)
 [![LLM](https://img.shields.io/badge/LLM-Gemini%20Flash-4285F4?logo=google&logoColor=white)](https://ai.google.dev/)
+[![Fallback](https://img.shields.io/badge/Fallback-Claude%20Haiku-D97757?logo=anthropic&logoColor=white)](https://www.anthropic.com/claude/haiku)
 [![Graph](https://img.shields.io/badge/Graph-Neo4j-008CC1?logo=neo4j&logoColor=white)](https://neo4j.com/)
 [![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -53,7 +54,7 @@ This is **not** a FAQ chatbot. Five differentiators, working together:
 
 ## 🏗️ Architecture
 
-Stateless backend; all state externalized (scalable, swappable stores). **~2 LLM calls per turn** by design, to stay within Gemini's free-tier limits.
+Stateless backend; all state externalized (scalable, swappable stores). **~2 LLM calls per turn** by design (one structured PERCEIVE + one streamed RESPOND), served by a **dual-provider LLM layer** (Gemini Flash + Claude Haiku) with a configurable primary — so a provider's quota or outage never dead-ends a customer.
 
 ```mermaid
 flowchart TB
@@ -70,9 +71,9 @@ flowchart TB
     end
 
     API --> LOOP
-    P  -->|"emotion · intents · tool plan"| GEM["✨ Gemini Flash"]
+    P  -->|"emotion · intents · tool plan"| GEM["✨ LLM layer<br/>Gemini Flash · Claude Haiku<br/>primary + auto-fallback"]
     RE -->|"grounded · tone · language"| GEM
-    P  -.->|retrieve policy| RAG["📚 Vector retrieval<br/>(policy corpus)"]
+    P  -.->|retrieve policy| RAG["📚 Vector retrieval<br/>Gemini embeddings"]
     AC -.->|relational reasoning| NEO[("🕸️ Neo4j<br/>customer graph")]
     AC -->|read / write| BIZ[("🗃️ Mock business DB<br/>SQLite")]
     RM --> MEM[("💾 Memory + traces<br/>SQLite")]
@@ -84,7 +85,7 @@ flowchart TB
 sequenceDiagram
     participant U as Customer
     participant L as Agent Loop
-    participant G as Gemini
+    participant G as LLM Gemini or Claude
     participant T as Tools and Graph
     U->>L: message
     L->>G: PERCEIVE - 1 structured call - emotion, intents, tool plan
@@ -93,6 +94,7 @@ sequenceDiagram
     L->>T: ACT - run safe tools now, gate risky ones
     L->>G: RESPOND - 1 streamed call, grounded, tone, language
     G-->>U: streamed reply with tool chips, sources, emotion badge
+    Note over G: primary answers first, other provider auto-covers on failure
     Note over L: REMEMBER - summarize at session end
 ```
 
@@ -117,7 +119,7 @@ sequenceDiagram
 
 ## 🚀 Quickstart
 
-**Prerequisites:** Python 3.10+ · Node.js 18+ · a free [Gemini API key](https://aistudio.google.com/apikey) · (Docker — optional, for the graph)
+**Prerequisites:** Python 3.10+ · Node.js 18+ · a free [Gemini API key](https://aistudio.google.com/apikey) (required — also powers embeddings) · *(optional)* an [Anthropic API key](https://console.anthropic.com/) to enable the Claude path · (Docker — optional, for the graph)
 
 <details>
 <summary><b>1. Backend (FastAPI)</b></summary>
@@ -129,11 +131,13 @@ python -m venv .venv
 # source .venv/bin/activate          # macOS/Linux
 pip install -r requirements.txt
 
-cp .env.example .env                 # then paste your GEMINI_API_KEY into .env
+cp .env.example .env                 # paste GEMINI_API_KEY (required). Optional:
+                                     # ANTHROPIC_API_KEY + LLM_PRIMARY=claude for
+                                     # the fast Haiku-primary path.
 python -m knowledge.ingest           # one-time: embed the policy corpus
 uvicorn main:app --reload --port 8000
 ```
-Verify: <http://localhost:8000/health> · <http://localhost:8000/health/llm> · <http://localhost:8000/docs>
+Verify: <http://localhost:8000/health> · <http://localhost:8000/health/llm> (shows the active provider) · <http://localhost:8000/docs>
 The mock business data **auto-seeds on first boot** (re-seed anytime with `python -m tools.seed`).
 </details>
 
@@ -219,7 +223,7 @@ customer-care-bot/
 
 ## ☁️ Deployment
 
-- **Backend → Render:** `render.yaml` blueprint included. New → Blueprint → select this repo → enter `GEMINI_API_KEY` as a secret (and, optionally, `ANTHROPIC_API_KEY` to enable the Claude fallback). (`rootDir: backend`, start `uvicorn main:app`.)
+- **Backend → Render:** `render.yaml` blueprint included. New → Blueprint → select this repo → enter `GEMINI_API_KEY` as a secret (required — also powers embeddings). For the fast Haiku-primary path, also add `ANTHROPIC_API_KEY` and set `LLM_PRIMARY=claude`. (`rootDir: backend`, start `uvicorn main:app`.)
 - **Frontend → Vercel:** import this repo → **Root Directory = `frontend`** → set `NEXT_PUBLIC_API_URL` to your Render URL.
 - After both are live, add your Vercel URL to Render's `CORS_ORIGINS` env var, then fill in the [Live Demo](#-live-demo) links above.
 
