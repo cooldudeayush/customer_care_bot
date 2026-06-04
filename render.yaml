@@ -32,6 +32,11 @@ services:
         value: gemini-2.0-flash
       - key: ANTHROPIC_MODEL
         value: claude-haiku-4-5-20251001
+      # Generation provider order. 'claude' = Haiku answers first (fast, low
+      # latency); Gemini stays as the embeddings provider + a safety-net
+      # fallback. Requires ANTHROPIC_API_KEY above. Set 'gemini' to go free-first.
+      - key: LLM_PRIMARY
+        value: claude
       # Browser origins allowed to call this API. "*" allows the deployed Vercel
       # frontend (and any origin) — fine here since the data is mock and the
       # Gemini key is server-side only. Lock to your exact Vercel URL(s) for prod.

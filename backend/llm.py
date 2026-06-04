@@ -284,18 +284,43 @@ class GeminiClient:
             ) from last_exc
         raise LLMError(f"Gemini call failed: {last_exc}") from last_exc
 
+    # -- provider selection -------------------------------------------------
+    def _use_claude_first(self) -> bool:
+        """True when Claude is the configured PRIMARY generator (and usable).
+
+        Set ``LLM_PRIMARY=claude`` to make generation fast (Haiku answers first,
+        Gemini only as a safety net). Falls back to Gemini-primary automatically
+        when no Anthropic key is set, so the free-tier default still works out of
+        the box. Embeddings ALWAYS use Gemini regardless (Anthropic has none).
+        """
+        return (
+            self._claude_enabled()
+            and self._settings.llm_primary.strip().lower() == "claude"
+        )
+
+    @property
+    def active_generation_provider(self) -> str:
+        """'claude' or 'gemini' — whichever answers generation first right now."""
+        return "claude" if self._use_claude_first() else "gemini"
+
+    @property
+    def active_generation_model(self) -> str:
+        """The model id that will actually answer a generation call right now."""
+        if self._use_claude_first():
+            return self._settings.anthropic_model
+        return self._settings.gemini_model
+
     # -- core generation ----------------------------------------------------
-    async def generate(
+    async def _gemini_generate(
         self,
-        prompt: str,
+        prompt: Any,
         *,
-        system_instruction: str | None = None,
-        temperature: float = 0.7,
-        max_output_tokens: int | None = None,
-        response_mime_type: str | None = None,
-        response_schema: Any | None = None,
+        system_instruction: str | None,
+        temperature: float,
+        max_output_tokens: int | None,
+        response_mime_type: str | None,
+        response_schema: Any | None,
     ) -> str:
-        """Generate text for ``prompt`` and return the model's reply string."""
         client = self._ensure_client()
         config = self._build_config(
             system_instruction=system_instruction,
@@ -312,14 +337,50 @@ class GeminiClient:
                 config=config,
             )
 
+        response = await self._with_backoff(_call)
+        return (getattr(response, "text", None) or "").strip()
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        system_instruction: str | None = None,
+        temperature: float = 0.7,
+        max_output_tokens: int | None = None,
+        response_mime_type: str | None = None,
+        response_schema: Any | None = None,
+    ) -> str:
+        """Generate text. PRIMARY provider answers first; the other is an
+        automatic fallback so a provider outage/quota never dead-ends."""
+        if self._use_claude_first():
+            try:
+                return await self._claude_generate(prompt, system_instruction, temperature)
+            except LLMError:
+                if self._settings.gemini_configured:
+                    logger.warning("Claude primary failed; falling back to Gemini (generate).")
+                    return await self._gemini_generate(
+                        prompt,
+                        system_instruction=system_instruction,
+                        temperature=temperature,
+                        max_output_tokens=max_output_tokens,
+                        response_mime_type=response_mime_type,
+                        response_schema=response_schema,
+                    )
+                raise
         try:
-            response = await self._with_backoff(_call)
+            return await self._gemini_generate(
+                prompt,
+                system_instruction=system_instruction,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+                response_mime_type=response_mime_type,
+                response_schema=response_schema,
+            )
         except LLMRateLimited:
             if self._claude_enabled():
                 logger.warning("Gemini exhausted; falling back to Claude (generate).")
                 return await self._claude_generate(prompt, system_instruction, temperature)
             raise
-        return (getattr(response, "text", None) or "").strip()
 
     async def generate_json(
         self,
@@ -350,20 +411,14 @@ class GeminiClient:
             raise LLMError(f"Expected a JSON object, got {type(parsed).__name__}.")
         return parsed
 
-    async def generate_structured(
+    async def _gemini_structured(
         self,
         contents: Any,
         *,
         response_schema: Any,
-        system_instruction: str | None = None,
-        temperature: float = 0.2,
+        system_instruction: str | None,
+        temperature: float,
     ) -> Any:
-        """Controlled generation against a Pydantic ``response_schema``.
-
-        Returns an instance of ``response_schema`` (via the SDK's ``.parsed``),
-        falling back to validating ``.text`` if needed. Used by the single
-        PERCEIVE/DECIDE call to get {emotion, intents, entities, tool plan}.
-        """
         client = self._ensure_client()
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
@@ -377,15 +432,7 @@ class GeminiClient:
                 model=self._settings.gemini_model, contents=contents, config=config
             )
 
-        try:
-            resp = await self._with_backoff(_call)
-        except LLMRateLimited:
-            if self._claude_enabled():
-                logger.warning("Gemini exhausted; falling back to Claude (structured).")
-                return await self._claude_structured(
-                    contents, response_schema, system_instruction
-                )
-            raise
+        resp = await self._with_backoff(_call)
         parsed = getattr(resp, "parsed", None)
         if parsed is not None:
             return parsed
@@ -397,24 +444,57 @@ class GeminiClient:
                 raise LLMError(f"Structured output did not match schema: {text[:200]!r}") from exc
         raise LLMError("Structured generation returned no parsable output.")
 
-    async def stream(
+    async def generate_structured(
         self,
         contents: Any,
         *,
+        response_schema: Any,
         system_instruction: str | None = None,
-        temperature: float = 0.7,
-    ) -> AsyncIterator[str]:
-        """Yield reply text chunk-by-chunk (for SSE streaming in Phase 1).
+        temperature: float = 0.2,
+    ) -> Any:
+        """Controlled generation against a Pydantic ``response_schema``.
 
-        ``contents`` may be a plain prompt string OR a multi-turn list of
-        ``{"role": "user"|"model", "parts": [{"text": ...}]}`` dicts (the SDK
-        coerces both). The agent loop passes the full transcript this way so the
-        stateless backend gets proper multi-turn context every call.
-
-        The SDK's streaming generator is sync; we drain it on a worker thread and
-        hand chunks back to the event loop one at a time. Rate-limit backoff is
-        applied to establishing the stream (the first chunk).
+        Returns an instance of ``response_schema``. PRIMARY provider first
+        (Claude via forced tool-use, or Gemini via response_schema); the other is
+        an automatic fallback. Used by the single PERCEIVE/DECIDE call to get
+        {emotion, intents, entities, tool plan}.
         """
+        if self._use_claude_first():
+            try:
+                return await self._claude_structured(contents, response_schema, system_instruction)
+            except LLMError:
+                if self._settings.gemini_configured:
+                    logger.warning("Claude primary failed; falling back to Gemini (structured).")
+                    return await self._gemini_structured(
+                        contents,
+                        response_schema=response_schema,
+                        system_instruction=system_instruction,
+                        temperature=temperature,
+                    )
+                raise
+        try:
+            return await self._gemini_structured(
+                contents,
+                response_schema=response_schema,
+                system_instruction=system_instruction,
+                temperature=temperature,
+            )
+        except LLMRateLimited:
+            if self._claude_enabled():
+                logger.warning("Gemini exhausted; falling back to Claude (structured).")
+                return await self._claude_structured(contents, response_schema, system_instruction)
+            raise
+
+    async def _gemini_stream(
+        self,
+        contents: Any,
+        *,
+        system_instruction: str | None,
+        temperature: float,
+    ) -> AsyncIterator[str]:
+        """Gemini token stream. The SDK's streaming generator is sync; we drain it
+        on a worker thread. Rate-limit backoff is applied at stream open (a 429
+        there raises ``LLMRateLimited`` before any token is yielded)."""
         client = self._ensure_client()
         config = self._build_config(
             system_instruction=system_instruction,
@@ -443,20 +523,7 @@ class GeminiClient:
             )
             return gen, _next(gen)
 
-        try:
-            generator, chunk = await self._with_backoff(_open_and_first)
-        except LLMRateLimited:
-            # Gemini is out of quota at stream open. Switch the whole reply to
-            # Claude so the customer still gets an answer (no tokens emitted yet,
-            # so this is a clean handover, not a mid-stream splice).
-            if self._claude_enabled():
-                logger.warning("Gemini exhausted; falling back to Claude (stream).")
-                async for text in self._claude_stream(
-                    contents, system_instruction=system_instruction, temperature=temperature
-                ):
-                    yield text
-                return
-            raise
+        generator, chunk = await self._with_backoff(_open_and_first)
         try:
             while chunk is not sentinel:
                 text = getattr(chunk, "text", None)
@@ -469,6 +536,57 @@ class GeminiClient:
             close = getattr(generator, "close", None)
             if callable(close):
                 await asyncio.to_thread(close)
+
+    async def stream(
+        self,
+        contents: Any,
+        *,
+        system_instruction: str | None = None,
+        temperature: float = 0.7,
+    ) -> AsyncIterator[str]:
+        """Yield reply text chunk-by-chunk (for SSE streaming).
+
+        ``contents`` may be a plain prompt string OR a multi-turn list of
+        ``{"role": "user"|"model", "parts": [{"text": ...}]}`` dicts. Streams from
+        the PRIMARY provider; if it fails *before any token is emitted*, cleanly
+        hands the whole reply to the other provider (never a mid-stream splice).
+        """
+        if self._use_claude_first():
+            yielded = False
+            try:
+                async for text in self._claude_stream(
+                    contents, system_instruction=system_instruction, temperature=temperature
+                ):
+                    yielded = True
+                    yield text
+            except LLMError:
+                if not yielded and self._settings.gemini_configured:
+                    logger.warning("Claude primary stream failed; falling back to Gemini (stream).")
+                    async for text in self._gemini_stream(
+                        contents, system_instruction=system_instruction, temperature=temperature
+                    ):
+                        yield text
+                else:
+                    raise
+            return
+
+        yielded = False
+        try:
+            async for text in self._gemini_stream(
+                contents, system_instruction=system_instruction, temperature=temperature
+            ):
+                yielded = True
+                yield text
+        except LLMRateLimited:
+            # Gemini out of quota at stream open (no tokens emitted yet) -> Claude.
+            if not yielded and self._claude_enabled():
+                logger.warning("Gemini exhausted; falling back to Claude (stream).")
+                async for text in self._claude_stream(
+                    contents, system_instruction=system_instruction, temperature=temperature
+                ):
+                    yield text
+            else:
+                raise
 
     async def embed_texts(
         self,

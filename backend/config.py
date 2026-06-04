@@ -86,6 +86,13 @@ class Settings(BaseSettings):
         default="claude-haiku-4-5-20251001",
         description="Cheapest Claude tier (Haiku) for the paid fallback. Override via env.",
     )
+    # Which provider answers GENERATION first. 'gemini' = free-first (Gemini
+    # primary, Claude fallback on 429). 'claude' = fast-first (Haiku primary,
+    # Gemini only as a safety net) — set LLM_PRIMARY=claude for low latency.
+    # Ignored when no Anthropic key is set (then it's always Gemini). NOTE:
+    # embeddings ALWAYS use Gemini (Anthropic has no embeddings API), so a valid
+    # GEMINI_API_KEY is still required for grounded retrieval either way.
+    llm_primary: str = Field(default="gemini", description="claude | gemini (generation only)")
 
     # ---- Embeddings (Phase 2 retrieval) ------------------------------------
     # Current unified-SDK embedding model. 768 dims (truncated + normalized) keeps

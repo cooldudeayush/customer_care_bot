@@ -157,6 +157,7 @@ class HealthResponse(BaseModel):
 class LLMHealthResponse(BaseModel):
     status: str  # ok | not_configured | error
     model: str
+    provider: str | None = None  # which provider actually answers (claude | gemini)
     detail: str | None = None
 
 
@@ -230,7 +231,7 @@ async def health() -> HealthResponse:
     return HealthResponse(
         status="ok",
         app_env=settings.app_env,
-        model=settings.gemini_model,
+        model=gemini_client.active_generation_model,
         retrieval_chunks=retriever.size,
         graph_enabled=graph_client.enabled,
     )
@@ -238,22 +239,27 @@ async def health() -> HealthResponse:
 
 @app.get("/health/llm", response_model=LLMHealthResponse, tags=["health"])
 async def health_llm() -> LLMHealthResponse:
-    if not settings.gemini_configured:
+    # Report the provider that actually answers generation (claude when
+    # LLM_PRIMARY=claude + an Anthropic key is set, otherwise gemini).
+    provider = gemini_client.active_generation_provider
+    model = gemini_client.active_generation_model
+    if not (settings.gemini_configured or settings.anthropic_configured):
         return LLMHealthResponse(
             status="not_configured",
-            model=settings.gemini_model,
-            detail="GEMINI_API_KEY is missing or a placeholder.",
+            model=model,
+            provider=provider,
+            detail="No LLM provider configured. Set GEMINI_API_KEY and/or ANTHROPIC_API_KEY.",
         )
     try:
         reply = await gemini_client.ping()
-        return LLMHealthResponse(status="ok", model=settings.gemini_model, detail=reply)
+        return LLMHealthResponse(status="ok", model=model, provider=provider, detail=reply)
     except LLMNotConfigured as exc:
         return LLMHealthResponse(
-            status="not_configured", model=settings.gemini_model, detail=str(exc)
+            status="not_configured", model=model, provider=provider, detail=str(exc)
         )
     except LLMError as exc:
         logger.exception("LLM health check failed")
-        return LLMHealthResponse(status="error", model=settings.gemini_model, detail=str(exc))
+        return LLMHealthResponse(status="error", model=model, provider=provider, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------
