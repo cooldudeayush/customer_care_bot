@@ -1,36 +1,63 @@
 # Demo Script
 
-> The one scenario that shows off every differentiator. Script it, rehearse it, record it.
-> (Phase 10 finalizes this.)
+A single ~90-second flow that shows off every differentiator. Uses the seeded demo
+customer **`cust_demo` (Aarav Sharma)**. Script it, rehearse it, record it.
 
-## Scenario: "The angry double-charge customer who also needs an address change."
+## Setup (once)
+1. `GEMINI_API_KEY` set in `backend/.env`; run `python -m knowledge.ingest`.
+2. Start backend (`uvicorn main:app --reload`) and frontend (`npm run dev`).
+3. (Optional) `docker compose up -d` + `NEO4J_PASSWORD=password123` to light up the graph.
+4. Open the app — note the **"What we know about you"** panel already shows Aarav's
+   orders and the seeded memory (a previously-delayed order #1190).
 
-1. **Customer opens angry (Hinglish + multi-intent + anger):**
-   *"I was charged TWICE for order 1234 and I'm furious. Also I need my delivery address
-   changed, kuch toh karo."*
-   → Emotion layer detects anger → calm, apologetic tone. Multi-intent detected.
-
-2. **Bot traverses the graph:** order 1234 → payments → finds the duplicate charge.
-   → Grounded in real (mock) data.
-
-3. **Bot proposes the fix and CONFIRMS:** *"I can see the duplicate charge of ₹1,499 and
-   I can refund it now — shall I go ahead?"* → yes → `issue_refund` runs → graph flips.
-
-4. **Bot handles the second intent:** updates the delivery address.
-
-5. **Bot recalls memory:** *"I also see your earlier order was delayed last month — that
-   one's been delivered now, just confirming it reached you."*
-
-6. **Out-of-scope request → graceful escalation** with a handoff packet.
-   *"I've summarized everything for a specialist — you won't need to repeat any of this."*
-
-**End state:** angry customer leaves calm, double-charge refunded, address fixed, nothing
-repeated, clean human handoff. The whole pitch in ~90 seconds.
+## Seeded data you can rely on
+| Order | Item | State | Hook |
+|---|---|---|---|
+| **#1234** | Wireless Headphones (electronics) | delivered 12 days ago, **duplicate ₹1,499 charge** | refund the duplicate |
+| #1190 | Cotton T-Shirt | delivered 40 days ago | window expired + the "delayed last month" memory |
+| #1255 | Phone Case | in transit | track / reschedule |
+| #1260 | Bluetooth Speaker | placed (not shipped) | cancellable |
 
 ---
 
-### Recording checklist
-- [ ] Seed data loaded (customer + order 1234 + duplicate payment + a past delayed order).
-- [ ] Run live once end-to-end.
-- [ ] Record screen + narration.
-- [ ] Put video link + this script in the README.
+## The flow
+
+**1. Angry + Hinglish + multi-intent** — type:
+> *"I was charged TWICE for order 1234 and I'm furious. Also I need my delivery address changed to 50 MG Road Bengaluru, kuch toh karo."*
+
+Watch for:
+- 😠 **emotion badge** ("sensed: angry/frustrated") and a calm, apologetic tone.
+- 🔧 **tool chips** as it checks the order and finds the **duplicate ₹1,499** charge.
+- The reply **mirrors light Hinglish** and handles **both intents**: it updates the
+  address immediately and **asks to confirm the refund** (the money action is gated).
+
+**2. Confirm the refund** — click **Yes, go ahead** (or type "haan kar do").
+- 🔧 **Issuing refund** chip → success. The reply confirms ₹1,499 back in 3–5 days.
+- The **panel updates** (and, with Neo4j on, the order's graph status flips).
+
+**3. Grounded policy question** — type:
+> *"What's your refund policy for electronics?"*
+- Answers **15 days** from the real docs, with a **"📄 Grounded in: refund_policy.md"** footer.
+
+**4. Cross-session memory** — type:
+> *"Did my earlier delayed order ever arrive?"*
+- Recalls order **#1190** from long-term memory ("that's been delivered now…").
+
+**5. Graceful escalation** — type something out of scope:
+> *"I want to take legal action over a warranty dispute."*
+- 🤝 **Handoff card** appears (issue · actions taken · next step · ticket #), and the
+  bot reassures: *"I've shared the full context with a specialist — you won't need to
+  repeat anything."* Show the specialist inbox at **`GET /handoffs`**.
+
+**End state:** angry customer leaves calm · double charge refunded · address fixed ·
+nothing repeated · clean human handoff.
+
+---
+
+## Bonus things to show judges
+- **`/docs`** — the FastAPI OpenAPI explorer (all endpoints).
+- **`/traces`** — per-turn observability (emotion, action, tools, latency).
+- **`/health`** — `graph_enabled`, `retrieval_chunks`, model.
+- The **CONFIRM gate**: try "refund order 1234" and *decline* — nothing happens.
+
+> Record this as a video **and** keep it runnable live. Put both links in the README.
