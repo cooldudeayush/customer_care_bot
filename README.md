@@ -83,15 +83,15 @@ sequenceDiagram
     participant U as Customer
     participant L as Agent Loop
     participant G as Gemini
-    participant T as Tools / Graph
+    participant T as Tools and Graph
     U->>L: message
-    L->>G: PERCEIVE (1 structured call) → {emotion, intents, tool plan}
-    L->>T: RETRIEVE policy chunks + graph data
-    Note over L: DECIDE — money/irreversible? → CONFIRM gate
-    L->>T: ACT — run safe tools now; gate risky ones
-    L->>G: RESPOND (1 streamed call) — grounded + tone + language
-    G-->>U: streamed reply (+ tool chips, sources, emotion badge)
-    Note over L: REMEMBER — summarize at session end
+    L->>G: PERCEIVE - 1 structured call - emotion, intents, tool plan
+    L->>T: RETRIEVE policy chunks and graph data
+    Note over L: DECIDE - money or irreversible action needs CONFIRM
+    L->>T: ACT - run safe tools now, gate risky ones
+    L->>G: RESPOND - 1 streamed call, grounded, tone, language
+    G-->>U: streamed reply with tool chips, sources, emotion badge
+    Note over L: REMEMBER - summarize at session end
 ```
 
 📄 Full design: **[`docs/architecture.md`](docs/architecture.md)**
