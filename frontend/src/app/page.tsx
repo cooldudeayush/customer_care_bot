@@ -31,6 +31,16 @@ import {
 
 const CUSTOMER_ID = "cust_demo";
 
+// One-click starter prompts (shown on an empty chat) — each kicks off a real
+// flow against the seeded demo data, while keeping the natural-language UX.
+const SUGGESTIONS = [
+  "I was charged twice for order 1234 and I'm upset",
+  "What's your refund policy for electronics?",
+  "Where is my order 1255?",
+  "Cancel order 1260",
+  "Did my earlier delayed order get sorted?",
+];
+
 // Emoji + styling for the detected-emotion badge (neutral is hidden).
 const EMOTION_BADGE: Record<string, { emoji: string; cls: string }> = {
   angry: { emoji: "😠", cls: "border-red-300 bg-red-50 text-red-700" },
@@ -328,10 +338,22 @@ export default function ChatPage() {
               </p>
             )}
             {!loadingHistory && messages.length === 0 && (
-              <div className="mt-20 text-center text-slate-400">
-                <p className="text-sm">
-                  Start a conversation. Try: “What is your refund policy?”
+              <div className="mt-16 flex flex-col items-center gap-4">
+                <p className="text-sm text-slate-400">
+                  Pick a starter — or just type naturally.
                 </p>
+                <div className="flex max-w-xl flex-wrap justify-center gap-2">
+                  {SUGGESTIONS.map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => handleSend(s)}
+                      disabled={sending}
+                      className="rounded-full border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 transition hover:border-blue-400 hover:bg-blue-50 disabled:opacity-40"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
             {messages.map((m) => {
