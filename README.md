@@ -4,6 +4,8 @@
 
 ### A care agent that **RESOLVES** problems by taking real actions — it doesn't just tell you how to fix them yourself.
 
+[![Live Demo](https://img.shields.io/badge/▶%20Live%20Demo-customer--care--bot.vercel.app-black?style=for-the-badge)](https://customer-care-bot-ten.vercel.app)
+
 [![Backend](https://img.shields.io/badge/Backend-FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Frontend](https://img.shields.io/badge/Frontend-Next.js%2016-black?logo=next.js)](https://nextjs.org/)
 [![LLM](https://img.shields.io/badge/LLM-Gemini%20Flash-4285F4?logo=google&logoColor=white)](https://ai.google.dev/)
@@ -23,11 +25,11 @@
 
 | | Link |
 |---|---|
-| 🌐 **App (frontend)** | _add your Vercel URL here_ |
-| ⚙️ **API (backend)** | _add your Render URL here_ · health: `/health` · docs: `/docs` |
+| 🌐 **App (frontend)** | **<https://customer-care-bot-ten.vercel.app>** |
+| ⚙️ **API (backend)** | <https://customer-care-bot-api.onrender.com> · [health](https://customer-care-bot-api.onrender.com/health) · [API docs](https://customer-care-bot-api.onrender.com/docs) |
 | 🎥 **Demo video** | _add your video link here_ |
 
-> ⚠️ Fill these in after deploying (see [Deployment](#-deployment)). The repo is public and every link must be live for submission.
+> ℹ️ The backend is on Render's free tier — it sleeps after ~15 min idle, so the **first request may take ~50s to wake up**. Just send it again if the first message is slow.
 
 ---
 
