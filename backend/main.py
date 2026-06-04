@@ -118,6 +118,10 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
+    # Also allow any Vercel deployment (prod + previews) and local dev via regex,
+    # independent of the CORS_ORIGINS env value — so the deployed frontend always
+    # works. Safe here: data is mock and the Gemini key is server-side only.
+    allow_origin_regex=r"https://([a-z0-9-]+\.)*vercel\.app|http://localhost:3000",
     # No cookie/credential auth yet (Phase 6). Keep this False so we never widen
     # the attack surface implicitly; flip to True only alongside real auth.
     allow_credentials=False,
