@@ -73,6 +73,19 @@ class Settings(BaseSettings):
     llm_max_retries: int = Field(default=4)
     llm_backoff_base_s: float = Field(default=1.0)
 
+    # ---- Claude fallback (PAID — only used when Gemini is exhausted) -------
+    # Cost discipline: Gemini (free) serves every turn first. Claude is invoked
+    # ONLY when Gemini returns 429/quota-exhausted, so the customer never gets a
+    # dead end. Haiku is the cheapest Claude tier — minimal $ per fallback turn.
+    # Embeddings stay Gemini-only (Anthropic has no embeddings API), so retrieval
+    # never costs anything. Leave the key blank to keep the fallback OFF (the bot
+    # then shows a friendly "try again in N seconds" message on 429 instead).
+    anthropic_api_key: str = Field(default="", description="Anthropic API key (sk-ant-...)")
+    anthropic_model: str = Field(
+        default="claude-haiku-4-5-20251001",
+        description="Cheapest Claude tier (Haiku) for the paid fallback. Override via env.",
+    )
+
     # ---- Embeddings (Phase 2 retrieval) ------------------------------------
     # Current unified-SDK embedding model. 768 dims (truncated + normalized) keeps
     # storage/compute lean for a small policy corpus; cosine sim needs normalized
@@ -130,6 +143,13 @@ class Settings(BaseSettings):
         """True when a non-placeholder API key is present."""
         key = self.gemini_api_key.strip()
         return bool(key) and not key.lower().startswith("your-")
+
+    @property
+    def anthropic_configured(self) -> bool:
+        """True when a real (non-placeholder) Anthropic key is present. When
+        False the Claude fallback stays OFF and the bot relies on Gemini alone."""
+        key = self.anthropic_api_key.strip()
+        return bool(key) and not key.lower().startswith(("your-", "sk-ant-your"))
 
     @property
     def neo4j_configured(self) -> bool:

@@ -107,6 +107,7 @@ sequenceDiagram
 | Frontend | **Next.js 16 + Tailwind v4** | Polished, streaming chat UX |
 | Backend | **Python 3.13 + FastAPI** | Async, stateless, great LLM ecosystem |
 | LLM | **Gemini Flash** (`google-genai` SDK) | Free tier, 1M context, multilingual, structured output |
+| LLM fallback | **Claude Haiku** (`anthropic` SDK) | Paid, but invoked *only* when Gemini's free quota is exhausted — so the bot never dead-ends |
 | Doc retrieval | **Gemini embeddings + cosine** | Reliable, dependency-light (LightRAG-swappable) |
 | Customer graph | **Neo4j** (Docker / Aura) | Relational reasoning over orders → items → policies |
 | Stores | **SQLite** (memory, business, traces) | Zero-setup; swappable to Postgres/Supabase |
@@ -182,8 +183,8 @@ One flow that exercises every differentiator (full script: [`docs/demo_script.md
 
 - **Confirmation gate** (server-enforced): money/irreversible tools *never* execute without an explicit "yes" — verified by an adversarial test suite.
 - **Grounded / anti-hallucination:** only states facts from retrieved policy + tool results; says *"let me check"* otherwise.
-- **Graceful degradation:** Neo4j down → SQLite fallback; LLM 429 → exponential backoff; tool failure → honest reply.
-- **Free-tier-aware:** ~2 LLM calls/turn (one structured PERCEIVE + one streamed RESPOND).
+- **Graceful degradation:** Neo4j down → SQLite fallback; tool failure → honest reply.
+- **Free-tier-aware, never down:** ~2 LLM calls/turn (one structured PERCEIVE + one streamed RESPOND), with exponential backoff on 429. When the free Gemini quota is finally exhausted, generation falls back to **Claude Haiku** (cheapest paid tier) so customers always get an answer — embeddings stay Gemini-only, so retrieval never costs a cent.
 - **Observability:** a structured trace per turn (`GET /traces`) — emotion, action, tools, sources, latency.
 - **Security/PII:** payment data masked at the source (`card ending 1234`); secrets in `.env` (never committed).
 - **Tested:** scenario suites for agentic resolution, the confirm gate, memory, escalation, and multi-intent — all runnable without an API key (LLM calls faked).
@@ -219,7 +220,7 @@ customer-care-bot/
 
 ## ☁️ Deployment
 
-- **Backend → Render:** `render.yaml` blueprint included. New → Blueprint → select this repo → enter `GEMINI_API_KEY` as a secret. (`rootDir: backend`, start `uvicorn main:app`.)
+- **Backend → Render:** `render.yaml` blueprint included. New → Blueprint → select this repo → enter `GEMINI_API_KEY` as a secret (and, optionally, `ANTHROPIC_API_KEY` to enable the Claude fallback). (`rootDir: backend`, start `uvicorn main:app`.)
 - **Frontend → Vercel:** import this repo → **Root Directory = `frontend`** → set `NEXT_PUBLIC_API_URL` to your Render URL.
 - After both are live, add your Vercel URL to Render's `CORS_ORIGINS` env var, then fill in the [Live Demo](#-live-demo) links above.
 

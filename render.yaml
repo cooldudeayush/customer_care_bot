@@ -20,11 +20,18 @@ services:
       # --- Secret: enter in the Render dashboard, never commit ---
       - key: GEMINI_API_KEY
         sync: false
+      # Paid fallback key (Claude Haiku). Used ONLY when Gemini hits its free
+      # quota, so the live bot never dead-ends. Enter in the dashboard; leave
+      # unset to keep production Gemini-only.
+      - key: ANTHROPIC_API_KEY
+        sync: false
       # --- Non-secret config: safe defaults, override in dashboard if needed ---
       - key: APP_ENV
         value: production
       - key: GEMINI_MODEL
         value: gemini-2.5-flash
+      - key: ANTHROPIC_MODEL
+        value: claude-haiku-4-5-20251001
       # Browser origins allowed to call this API. "*" allows the deployed Vercel
       # frontend (and any origin) — fine here since the data is mock and the
       # Gemini key is server-side only. Lock to your exact Vercel URL(s) for prod.

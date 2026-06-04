@@ -17,3 +17,7 @@ numpy>=1.26,<3
 # cloud — same code, just a different NEO4J_URI). Optional at runtime: the bot
 # degrades to SQLite eligibility if the graph is unreachable.
 neo4j>=5,<6
+# Paid fallback provider (Claude Haiku). Used ONLY when the free Gemini tier is
+# exhausted (429), so the bot always answers. Optional at runtime: with no
+# ANTHROPIC_API_KEY set, the import is unused and the bot stays Gemini-only.
+anthropic>=0.40,<1
