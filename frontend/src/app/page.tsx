@@ -41,6 +41,14 @@ const SUGGESTIONS = [
   "Did my earlier delayed order get sorted?",
 ];
 
+// Turn a corpus filename into a clean title: refund_policy.md -> "Refund Policy".
+const prettySource = (f: string) =>
+  f
+    .replace(/\.md$/i, "")
+    .split("_")
+    .map((w) => (w.toLowerCase() === "faq" ? "FAQ" : w.charAt(0).toUpperCase() + w.slice(1)))
+    .join(" ");
+
 // Emoji + styling for the detected-emotion badge (neutral is hidden).
 const EMOTION_BADGE: Record<string, { emoji: string; cls: string }> = {
   angry: { emoji: "😠", cls: "border-red-300 bg-red-50 text-red-700" },
@@ -436,7 +444,7 @@ export default function ChatPage() {
                   </div>
                   {m.role === "bot" && usedSources.length > 0 && (
                     <div className="mt-1 max-w-[80%] px-1 text-xs text-slate-400">
-                      📄 Grounded in: {usedSources.join(", ")}
+                      📄 Grounded in: {usedSources.map(prettySource).join(", ")}
                     </div>
                   )}
                 </div>
