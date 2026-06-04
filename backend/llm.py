@@ -39,6 +39,36 @@ class LLMNotConfigured(LLMError):
     """Raised when no usable Gemini API key is configured."""
 
 
+class LLMRateLimited(LLMError):
+    """Raised when the model is rate-limited / out of quota (HTTP 429).
+
+    ``retry_after`` is the suggested wait in seconds (parsed from the error),
+    so the UI can tell the customer exactly how long to wait.
+    """
+
+    def __init__(self, message: str, retry_after: int | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def _retry_after_seconds(exc: Exception) -> int | None:
+    """Extract the suggested retry delay (seconds) from a Gemini 429 error."""
+    import re
+
+    s = str(exc)
+    for pattern in (
+        r"retryDelay['\"]?\s*[:=]\s*['\"]?(\d+(?:\.\d+)?)\s*s",  # 'retryDelay': '56s'
+        r"retry in (\d+(?:\.\d+)?)\s*s",  # Please retry in 56.5s
+    ):
+        m = re.search(pattern, s)
+        if m:
+            try:
+                return int(float(m.group(1))) + 1  # round up a touch
+            except ValueError:
+                return None
+    return None
+
+
 def _is_rate_limit(exc: Exception) -> bool:
     """Best-effort detection of a 429 / quota-exhausted error.
 
@@ -114,6 +144,11 @@ class GeminiClient:
                     await asyncio.sleep(delay)
                     continue
                 break
+        if last_exc is not None and _is_rate_limit(last_exc):
+            raise LLMRateLimited(
+                f"Gemini rate limit: {last_exc}",
+                retry_after=_retry_after_seconds(last_exc),
+            ) from last_exc
         raise LLMError(f"Gemini call failed: {last_exc}") from last_exc
 
     # -- core generation ----------------------------------------------------

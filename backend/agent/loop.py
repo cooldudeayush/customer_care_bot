@@ -26,7 +26,7 @@ from typing import Any, AsyncIterator
 
 from pii import mask_pii
 from knowledge.retriever import Retriever, retriever as default_retriever
-from llm import GeminiClient, LLMError, LLMNotConfigured, gemini_client
+from llm import GeminiClient, LLMError, LLMNotConfigured, LLMRateLimited, gemini_client
 from memory.store import ConversationStore, Message, store
 from memory.summarize import summarize_session
 from tools import registry
@@ -42,6 +42,15 @@ _NO_KEY_MSG = (
     "The bot isn't connected to Gemini yet. Add your GEMINI_API_KEY to "
     "backend/.env and restart the server."
 )
+
+
+def _rate_limit_message(retry_after: int | None) -> str:
+    """Friendly, customer-facing message for a 429 / quota error."""
+    wait = f"about {retry_after} seconds" if retry_after else "a minute"
+    return (
+        f"I'm getting a lot of requests right now and hit a temporary limit. "
+        f"Please try again in {wait} — sorry about that!"
+    )
 
 
 def _to_contents(history: list[Message]) -> list[dict[str, Any]]:
@@ -150,6 +159,10 @@ class AgentLoop:
         except LLMNotConfigured:
             logger.info("Chat attempted without a configured GEMINI_API_KEY")
             yield {"type": "error", "message": _NO_KEY_MSG}
+            return
+        except LLMRateLimited as exc:
+            logger.warning("Rate-limited during PERCEIVE for session %s", session_id)
+            yield {"type": "error", "message": _rate_limit_message(exc.retry_after)}
             return
         except Exception:  # noqa: BLE001 - degrade to a plain answer on parse/LLM error
             logger.exception("PERCEIVE failed; falling back to ANSWER")
@@ -348,9 +361,16 @@ class AgentLoop:
             except LLMNotConfigured:
                 yield {"type": "error", "message": _NO_KEY_MSG}
                 errored = True
-            except LLMError as exc:
+            except LLMRateLimited as exc:
+                logger.warning("Rate-limited during RESPOND for session %s", session_id)
+                yield {"type": "error", "message": _rate_limit_message(exc.retry_after)}
+                errored = True
+            except LLMError:
                 logger.exception("LLM error during RESPOND for session %s", session_id)
-                yield {"type": "error", "message": f"Sorry — I hit a problem: {exc}"}
+                yield {
+                    "type": "error",
+                    "message": "Sorry — something went wrong on my end. Please try again in a moment.",
+                }
                 errored = True
 
             # If the combined reply failed after we staged a MIXED confirmation,
