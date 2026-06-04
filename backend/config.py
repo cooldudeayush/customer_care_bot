@@ -61,11 +61,12 @@ class Settings(BaseSettings):
     # the app still boots (and /health stays green) without a key configured.
     gemini_api_key: str = Field(default="", description="Google AI Studio API key")
     gemini_model: str = Field(
-        default="gemini-2.5-flash",
+        default="gemini-2.0-flash",
         description=(
-            "Flash model id for the current google-genai SDK. "
-            "Alternatives: 'gemini-flash-latest' (tracks newest), "
-            "'gemini-2.0-flash'. Override via env."
+            "Flash model id for the current google-genai SDK. Default is "
+            "'gemini-2.0-flash' for its more generous free daily quota. "
+            "Alternatives: 'gemini-2.5-flash' (newer, smaller free tier), "
+            "'gemini-flash-latest' (tracks newest). Override via env."
         ),
     )
     # 2-LLM-calls-per-turn discipline + free-tier (~15 rpm) backoff knobs.

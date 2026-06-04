@@ -29,7 +29,7 @@ services:
       - key: APP_ENV
         value: production
       - key: GEMINI_MODEL
-        value: gemini-2.5-flash
+        value: gemini-2.0-flash
       - key: ANTHROPIC_MODEL
         value: claude-haiku-4-5-20251001
       # Browser origins allowed to call this API. "*" allows the deployed Vercel
