@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, AsyncIterator
 
+from pii import mask_pii
 from knowledge.retriever import Retriever, retriever as default_retriever
 from llm import GeminiClient, LLMError, LLMNotConfigured, gemini_client
 from memory.store import ConversationStore, Message, store
@@ -96,6 +98,9 @@ class AgentLoop:
     async def stream(
         self, *, session_id: str, customer_id: str | None, message: str
     ) -> AsyncIterator[dict[str, Any]]:
+        t_start = time.monotonic()
+        tools_trace: list[dict] = []   # [{name, success}] for the turn trace
+        sources_trace: list[str] = []  # grounding doc filenames for the trace
         await self.store.ensure_session(session_id, customer_id)
         await self.store.add_message(session_id, "user", message)
 
@@ -282,10 +287,10 @@ class AgentLoop:
                 args = parse_args(tc)
                 yield {"type": "tool", "name": tc.name, "status": "running", "args": args}
                 result = await asyncio.to_thread(registry.execute, tc.name, args)
-                # Audit log: every action (esp. money/irreversible) leaves a record.
+                # Audit log (PII-masked): every action leaves a record.
                 logger.info(
                     "TOOL_EXEC session=%s route=%s tool=%s args=%s success=%s",
-                    session_id, route, tc.name, args, result.get("success"),
+                    session_id, route, tc.name, mask_pii(str(args)), result.get("success"),
                 )
                 yield {
                     "type": "tool",
@@ -294,6 +299,7 @@ class AgentLoop:
                     "success": bool(result.get("success")),
                 }
                 tool_results.append({"name": tc.name, "args": args, "result": result})
+                tools_trace.append({"name": tc.name, "success": bool(result.get("success"))})
 
             # MIXED (multi-intent): the safe parts ran above; stage the
             # confirm-required parts for the next turn and have RESPOND propose them.
@@ -320,6 +326,7 @@ class AgentLoop:
                     "type": "sources",
                     "sources": [{"source": c.source, "heading": c.heading} for c in doc_chunks],
                 }
+            sources_trace = [c.source for c in doc_chunks]
 
             system_instruction = build_respond_instruction(
                 doc_chunks,
@@ -347,10 +354,30 @@ class AgentLoop:
                 await self.store.clear_pending_action(session_id)
                 awaiting_confirmation = False
 
+        reply = "".join(reply_parts).strip()
+
+        # --- observability: write the structured turn trace (Phase 9) -------
+        try:
+            await self.store.add_trace(
+                session_id=session_id,
+                customer_id=customer_id,
+                turn_no=len(user_msgs),
+                emotion_state=perception.emotion.state,
+                emotion_intensity=perception.emotion.intensity,
+                action=str(effective),
+                intents=list(perception.intents or []),
+                tools=tools_trace,
+                sources=sources_trace,
+                reply_len=len(reply),
+                latency_ms=int((time.monotonic() - t_start) * 1000),
+                errored=errored,
+            )
+        except Exception:  # noqa: BLE001 - tracing must never break a turn
+            logger.exception("Failed to write turn trace")
+
         if errored:
             return
 
-        reply = "".join(reply_parts).strip()
         if reply:
             await self.store.add_message(session_id, "bot", reply)
 

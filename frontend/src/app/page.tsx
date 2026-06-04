@@ -17,9 +17,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   checkHealth,
+  getCustomerInfo,
   getSession,
   listSessions,
   streamChat,
+  type CustomerInfo,
   type SessionSummary,
   type Source,
   type ToolEvent,
@@ -81,17 +83,23 @@ export default function ChatPage() {
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [backendUp, setBackendUp] = useState<boolean | null>(null);
   const [awaitingConfirm, setAwaitingConfirm] = useState(false);
+  const [customerInfo, setCustomerInfo] = useState<CustomerInfo | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const refreshSessions = useCallback(async () => {
     setSessions(await listSessions(CUSTOMER_ID));
   }, []);
 
-  // Initial load: backend health + existing sessions.
+  const refreshCustomerInfo = useCallback(async () => {
+    setCustomerInfo(await getCustomerInfo(CUSTOMER_ID));
+  }, []);
+
+  // Initial load: backend health + existing sessions + what-we-know panel.
   useEffect(() => {
     checkHealth().then(setBackendUp);
     refreshSessions();
-  }, [refreshSessions]);
+    refreshCustomerInfo();
+  }, [refreshSessions, refreshCustomerInfo]);
 
   // Auto-scroll to the newest content.
   useEffect(() => {
@@ -238,6 +246,7 @@ export default function ChatPage() {
     );
 
     setSending(false);
+    refreshCustomerInfo(); // orders/memory may have changed this turn
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -456,6 +465,78 @@ export default function ChatPage() {
           </div>
         </div>
       </main>
+
+      {/* ---------------- "WHAT WE KNOW ABOUT YOU" PANEL ---------------- */}
+      <aside className="hidden w-80 shrink-0 flex-col gap-4 overflow-y-auto border-l border-slate-200 bg-white p-4 md:flex">
+        <h2 className="text-sm font-semibold text-slate-700">What we know about you</h2>
+        {!customerInfo || !customerInfo.snapshot.known ? (
+          <p className="text-xs text-slate-400">No customer record.</p>
+        ) : (
+          <>
+            <div>
+              <div className="text-sm font-medium">{customerInfo.snapshot.name}</div>
+              <div className="text-xs text-slate-500">
+                {customerInfo.snapshot.tier} tier · {customerInfo.snapshot.customer_id}
+              </div>
+              {customerInfo.snapshot.address && (
+                <div className="mt-1 text-xs text-slate-500">📍 {customerInfo.snapshot.address}</div>
+              )}
+            </div>
+
+            <div>
+              <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                Orders
+              </div>
+              <div className="flex flex-col gap-1">
+                {customerInfo.snapshot.orders?.map((o) => (
+                  <div
+                    key={o.order_id}
+                    className="rounded-lg border border-slate-100 bg-slate-50 px-2 py-1 text-xs"
+                  >
+                    <div className="flex justify-between">
+                      <span className="font-medium">#{o.order_id}</span>
+                      <span className="text-slate-500">{o.status}</span>
+                    </div>
+                    <div className="text-slate-500">
+                      {o.items} · ₹{o.total}
+                    </div>
+                    {o.duplicate_charge ? (
+                      <div className="text-red-600">⚠ duplicate ₹{o.duplicate_charge}</div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {customerInfo.memory && (
+              <div>
+                <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  Memory
+                </div>
+                {customerInfo.memory.summary && (
+                  <p className="text-xs text-slate-600">{customerInfo.memory.summary}</p>
+                )}
+                {customerInfo.memory.open_items.length > 0 && (
+                  <div className="mt-2">
+                    <div className="text-xs font-medium text-slate-500">Open items</div>
+                    <ul className="list-disc pl-4 text-xs text-slate-600">
+                      {customerInfo.memory.open_items.map((it, i) => (
+                        <li key={i}>{it}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {customerInfo.memory.preferences.length > 0 && (
+                  <div className="mt-2 text-xs text-slate-600">
+                    <span className="font-medium text-slate-500">Prefs:</span>{" "}
+                    {customerInfo.memory.preferences.join(", ")}
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </aside>
     </div>
   );
 }

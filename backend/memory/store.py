@@ -78,6 +78,24 @@ class HandoffRecord:
     created_at: str
 
 
+@dataclass
+class TraceRecord:
+    id: int
+    session_id: str | None
+    customer_id: str | None
+    turn_no: int | None
+    emotion_state: str | None
+    emotion_intensity: int | None
+    action: str | None
+    intents: list[str]
+    tools: list[dict]
+    sources: list[str]
+    reply_len: int | None
+    latency_ms: int | None
+    errored: bool
+    created_at: str
+
+
 class ConversationStore:
     """CRUD over conversations + messages. All public methods are async."""
 
@@ -442,6 +460,68 @@ class ConversationStore:
                     "SELECT * FROM handoff_packets WHERE id = ?", (handoff_id,)
                 ).fetchone()
                 return self._row_to_handoff(row) if row else None
+
+        return await asyncio.to_thread(_op)
+
+    # -- observability traces (Phase 9) -------------------------------------
+    async def add_trace(
+        self,
+        *,
+        session_id: str,
+        customer_id: str | None,
+        turn_no: int,
+        emotion_state: str | None,
+        emotion_intensity: int | None,
+        action: str | None,
+        intents: list[str],
+        tools: list[dict],
+        sources: list[str],
+        reply_len: int,
+        latency_ms: int,
+        errored: bool,
+    ) -> None:
+        def _op() -> None:
+            with connect() as conn:
+                conn.execute(
+                    "INSERT INTO turn_traces "
+                    "(session_id, customer_id, turn_no, emotion_state, emotion_intensity, "
+                    "action, intents, tools, sources, reply_len, latency_ms, errored, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        session_id, customer_id, turn_no, emotion_state, emotion_intensity,
+                        action, json.dumps(intents or []), json.dumps(tools or []),
+                        json.dumps(sources or []), reply_len, latency_ms,
+                        1 if errored else 0, _now(),
+                    ),
+                )
+                conn.commit()
+
+        await asyncio.to_thread(_op)
+
+    async def list_traces(self, session_id: str | None = None, limit: int = 50) -> list[TraceRecord]:
+        def _op() -> list[TraceRecord]:
+            with connect() as conn:
+                if session_id:
+                    rows = conn.execute(
+                        "SELECT * FROM turn_traces WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+                        (session_id, limit),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT * FROM turn_traces ORDER BY id DESC LIMIT ?", (limit,)
+                    ).fetchall()
+                return [
+                    TraceRecord(
+                        id=r["id"], session_id=r["session_id"], customer_id=r["customer_id"],
+                        turn_no=r["turn_no"], emotion_state=r["emotion_state"],
+                        emotion_intensity=r["emotion_intensity"], action=r["action"],
+                        intents=_loads_list(r["intents"]), tools=_loads_list(r["tools"]),
+                        sources=_loads_list(r["sources"]), reply_len=r["reply_len"],
+                        latency_ms=r["latency_ms"], errored=bool(r["errored"]),
+                        created_at=r["created_at"],
+                    )
+                    for r in rows
+                ]
 
         return await asyncio.to_thread(_op)
 

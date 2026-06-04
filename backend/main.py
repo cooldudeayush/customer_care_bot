@@ -15,6 +15,7 @@ frontend (Vercel) can call the deployed backend (Render).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -32,6 +33,7 @@ from knowledge.graph import graph_client
 from knowledge.retriever import retriever
 from llm import LLMError, LLMNotConfigured, gemini_client
 from memory.store import store
+from tools.actions import customer_snapshot
 from tools.business_db import init_db as init_business_db, is_seeded
 
 settings = get_settings()
@@ -186,6 +188,28 @@ class HandoffOut(BaseModel):
     created_at: str
 
 
+class TraceOut(BaseModel):
+    id: int
+    session_id: str | None
+    customer_id: str | None
+    turn_no: int | None
+    emotion_state: str | None
+    emotion_intensity: int | None
+    action: str | None
+    intents: list[str]
+    tools: list[dict]
+    sources: list[str]
+    reply_len: int | None
+    latency_ms: int | None
+    errored: bool
+    created_at: str
+
+
+class CustomerInfoOut(BaseModel):
+    snapshot: dict
+    memory: dict | None
+
+
 # ---------------------------------------------------------------------------
 # Meta / health
 # ---------------------------------------------------------------------------
@@ -324,6 +348,31 @@ async def get_handoff(handoff_id: int) -> HandoffOut:
     if h is None:
         raise HTTPException(status_code=404, detail="Handoff not found")
     return HandoffOut(**vars(h))
+
+
+# ---------------------------------------------------------------------------
+# Observability (Phase 9) + the "what we know about you" panel
+# ---------------------------------------------------------------------------
+@app.get("/traces", response_model=list[TraceOut], tags=["observability"])
+async def list_traces(session_id: str | None = None, limit: int = 50) -> list[TraceOut]:
+    """Structured per-turn traces (most recent first) — the observability artifact."""
+    return [TraceOut(**vars(t)) for t in await store.list_traces(session_id, limit)]
+
+
+@app.get("/customer/{customer_id}", response_model=CustomerInfoOut, tags=["customer"])
+async def get_customer(customer_id: str) -> CustomerInfoOut:
+    """What the bot knows about a customer: live orders snapshot + long-term memory."""
+    snap = await asyncio.to_thread(customer_snapshot, customer_id)
+    mem = await store.get_customer_memory(customer_id)
+    memory = None
+    if mem:
+        memory = {
+            "summary": mem.summary,
+            "open_items": mem.open_items,
+            "preferences": mem.preferences,
+            "sentiment": mem.sentiment,
+        }
+    return CustomerInfoOut(snapshot=snap, memory=memory)
 
 
 if __name__ == "__main__":

@@ -209,6 +209,49 @@ export async function getSession(sessionId: string): Promise<SessionDetail | nul
   }
 }
 
+// ---- "What we know about you" panel (Phase 9) ----
+export interface CustomerOrder {
+  order_id: string;
+  status: string;
+  total: number;
+  items: string;
+  duplicate_charge: number | null;
+}
+
+export interface CustomerSnapshot {
+  known: boolean;
+  customer_id?: string;
+  name?: string;
+  tier?: string;
+  address?: string;
+  orders?: CustomerOrder[];
+}
+
+export interface CustomerMemoryView {
+  summary: string | null;
+  open_items: string[];
+  preferences: string[];
+  sentiment: string | null;
+}
+
+export interface CustomerInfo {
+  snapshot: CustomerSnapshot;
+  memory: CustomerMemoryView | null;
+}
+
+/** What the bot knows about a customer (live orders + long-term memory). */
+export async function getCustomerInfo(customerId: string): Promise<CustomerInfo | null> {
+  try {
+    const res = await fetch(`${API_URL}/customer/${encodeURIComponent(customerId)}`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as CustomerInfo;
+  } catch {
+    return null;
+  }
+}
+
 /** Quick liveness check used by the UI to show backend status. */
 export async function checkHealth(): Promise<boolean> {
   try {

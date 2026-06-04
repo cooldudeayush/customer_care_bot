@@ -45,6 +45,25 @@ CREATE TABLE IF NOT EXISTS customer_memory (
     last_interaction TEXT
 );
 
+-- Structured per-turn observability trace (Phase 9). PII-safe by design:
+-- it stores metadata (action, tools+success, sources, latency), not raw content.
+CREATE TABLE IF NOT EXISTS turn_traces (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id        TEXT,
+    customer_id       TEXT,
+    turn_no           INTEGER,
+    emotion_state     TEXT,
+    emotion_intensity INTEGER,
+    action            TEXT,
+    intents           TEXT,   -- JSON list
+    tools             TEXT,   -- JSON list [{name, success}]
+    sources           TEXT,   -- JSON list of doc filenames
+    reply_len         INTEGER,
+    latency_ms        INTEGER,
+    errored           INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT NOT NULL
+);
+
 -- Human-handoff packets — the specialist "inbox" (Phase 7).
 CREATE TABLE IF NOT EXISTS handoff_packets (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
