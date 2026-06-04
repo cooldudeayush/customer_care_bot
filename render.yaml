@@ -25,10 +25,11 @@ services:
         value: production
       - key: GEMINI_MODEL
         value: gemini-2.5-flash
-      # IMPORTANT: after the frontend is deployed on Vercel, set this to your
-      # Vercel URL so the browser is allowed to call this API. Comma-separated.
+      # Browser origins allowed to call this API. "*" allows the deployed Vercel
+      # frontend (and any origin) — fine here since the data is mock and the
+      # Gemini key is server-side only. Lock to your exact Vercel URL(s) for prod.
       - key: CORS_ORIGINS
-        value: http://localhost:3000
+        value: "*"
       # Neo4j (Phase 4) — leave blank until you wire the graph / cloud Aura.
       - key: NEO4J_URI
         sync: false
