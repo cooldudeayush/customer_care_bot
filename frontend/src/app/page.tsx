@@ -192,6 +192,82 @@ function WarnIcon() {
   );
 }
 
+/* ---------------- Lightweight, XSS-safe Markdown for bot replies ----------------
+ * Claude returns Markdown (**bold**, *italic*, lists). We render it as real React
+ * nodes — never raw HTML — so there's no injection risk and no extra dependency.
+ * Handles: **bold**, __bold__, *italic*, _italic_, `code`, and "- " / "1." lists. */
+function renderInline(text: string): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  const re = /(\*\*([^*]+?)\*\*|__([^_]+?)__|\*([^*\n]+?)\*|_([^_\n]+?)_|`([^`]+?)`)/g;
+  let last = 0;
+  let k = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    if (m[2] != null || m[3] != null) out.push(<strong key={k++}>{m[2] ?? m[3]}</strong>);
+    else if (m[4] != null || m[5] != null) out.push(<em key={k++}>{m[4] ?? m[5]}</em>);
+    else if (m[6] != null) out.push(<code key={k++}>{m[6]}</code>);
+    last = re.lastIndex;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
+function Markdown({ text }: { text: string }) {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const blocks: React.ReactNode[] = [];
+  let para: string[] = [];
+  let list: { ordered: boolean; items: string[] } | null = null;
+  let key = 0;
+
+  const flushPara = () => {
+    if (!para.length) return;
+    const buf = para;
+    blocks.push(
+      <p key={`p${key++}`}>
+        {buf.map((ln, j) => (
+          <span key={j}>
+            {j > 0 ? <br /> : null}
+            {renderInline(ln)}
+          </span>
+        ))}
+      </p>,
+    );
+    para = [];
+  };
+  const flushList = () => {
+    if (!list) return;
+    const cur = list;
+    const items = cur.items.map((it, j) => <li key={j}>{renderInline(it)}</li>);
+    blocks.push(
+      cur.ordered ? <ol key={`l${key++}`}>{items}</ol> : <ul key={`l${key++}`}>{items}</ul>,
+    );
+    list = null;
+  };
+
+  for (const line of lines) {
+    const lm = line.match(/^\s*([-*•]|\d+[.)])\s+(.*)$/);
+    if (lm) {
+      flushPara();
+      const ordered = /\d/.test(lm[1]);
+      if (!list || list.ordered !== ordered) {
+        flushList();
+        list = { ordered, items: [] };
+      }
+      list.items.push(lm[2]);
+    } else if (line.trim() === "") {
+      flushPara();
+      flushList();
+    } else {
+      flushList();
+      para.push(line);
+    }
+  }
+  flushPara();
+  flushList();
+  return <>{blocks}</>;
+}
+
 export default function ChatPage() {
   const [owner] = useState<string>(() => getOwner());
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -216,17 +292,26 @@ export default function ChatPage() {
   // body), so it never cascades renders; `cancelled` guards a fast unmount.
   useEffect(() => {
     let cancelled = false;
-    checkHealth().then((up) => {
-      if (!cancelled) setBackendUp(up);
-    });
+    const probe = () =>
+      checkHealth().then((up) => {
+        if (!cancelled) setBackendUp(up);
+      });
+    probe();
+    // Re-check on an interval so the badge recovers once Render's free tier
+    // wakes from cold start (the first probe can run before the backend is up).
+    const id = window.setInterval(probe, 25000);
     listSessions(owner).then((s) => {
       if (!cancelled) setSessions(s);
     });
     getCustomerInfo(CUSTOMER_ID).then((c) => {
-      if (!cancelled) setCustomerInfo(c);
+      if (!cancelled) {
+        setCustomerInfo(c);
+        if (c) setBackendUp(true); // a real response means we're online
+      }
     });
     return () => {
       cancelled = true;
+      window.clearInterval(id);
     };
   }, [owner]);
 
@@ -346,7 +431,10 @@ export default function ChatPage() {
     await streamChat(
       { message: text, session_id: activeId, customer_id: CUSTOMER_ID, owner },
       {
-        onToken: appendToBot,
+        onToken: (chunk) => {
+          setBackendUp(true); // a streaming reply proves the backend is online
+          appendToBot(chunk);
+        },
         onSources: setSources,
         onTool: addTool,
         onEmotion: (em) =>
@@ -358,6 +446,7 @@ export default function ChatPage() {
             prev.map((m) => (m.id === botId ? { ...m, handoff: h } : m)),
           ),
         onDone: (e) => {
+          setBackendUp(true);
           // Only update confirm state if this stream is for the active session
           // (guards against a late stream landing after a session switch).
           if (e.session_id === activeId) {
@@ -589,17 +678,23 @@ export default function ChatPage() {
                   )}
 
                   <div className="bubble-bot">
-                    {isLive && !m.text ? (
-                      <span style={{ display: "inline-flex", gap: 5, padding: "3px 0" }}>
-                        <span className="tdot" />
-                        <span className="tdot" style={{ animationDelay: "0.15s" }} />
-                        <span className="tdot" style={{ animationDelay: "0.3s" }} />
-                      </span>
+                    {isLive ? (
+                      !m.text ? (
+                        <span style={{ display: "inline-flex", gap: 5, padding: "3px 0" }}>
+                          <span className="tdot" />
+                          <span className="tdot" style={{ animationDelay: "0.15s" }} />
+                          <span className="tdot" style={{ animationDelay: "0.3s" }} />
+                        </span>
+                      ) : (
+                        // While streaming, show raw text + caret (Markdown is
+                        // applied once the reply is complete, below).
+                        <>
+                          <span style={{ whiteSpace: "pre-wrap" }}>{m.text}</span>
+                          <span className="caret" />
+                        </>
+                      )
                     ) : (
-                      <>
-                        {m.text}
-                        {isLive && m.text ? <span className="caret" /> : null}
-                      </>
+                      <Markdown text={m.text} />
                     )}
                   </div>
 

@@ -402,8 +402,73 @@ body {
   font-size: 16px;
   color: #353c43;
   line-height: 1.6;
-  white-space: pre-wrap;
   word-break: break-word;
+}
+/* Rendered Markdown inside a bot reply */
+.bubble-bot p {
+  margin: 0 0 12px;
+}
+.bubble-bot p:last-child {
+  margin-bottom: 0;
+}
+.bubble-bot strong {
+  color: var(--maroon);
+  font-weight: 700;
+}
+.bubble-bot em {
+  color: var(--slate);
+  font-style: italic;
+}
+.bubble-bot code {
+  font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+  font-size: 0.9em;
+  background: #f4f5f6;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+.bubble-bot ul,
+.bubble-bot ol {
+  margin: 0 0 12px;
+  padding-left: 2px;
+  list-style: none;
+}
+.bubble-bot ul:last-child,
+.bubble-bot ol:last-child {
+  margin-bottom: 0;
+}
+.bubble-bot li {
+  position: relative;
+  padding-left: 22px;
+  margin-bottom: 7px;
+}
+.bubble-bot li:last-child {
+  margin-bottom: 0;
+}
+.bubble-bot ul li::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 10px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--gold);
+}
+.bubble-bot ol {
+  counter-reset: ccb-li;
+}
+.bubble-bot ol li {
+  counter-increment: ccb-li;
+}
+.bubble-bot ol li::before {
+  content: counter(ccb-li) ".";
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: var(--gold-ink);
+  font-weight: 700;
+  font-size: 13.5px;
 }
 
 /* ---- inline message meta (emotion · tools · handoff · sources) ---- */
